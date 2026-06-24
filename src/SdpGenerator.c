@@ -309,6 +309,10 @@ static PSDP_OPTION getAttributesList(char*urlSafeAddr) {
         else {
             err |= addAttributeString(&optionHead, "x-ss-video[0].chromaSamplingType", "0");
         }
+
+        if (StreamConfig.enableNativeCursor) {
+            err |= addAttributeString(&optionHead, "x-ss-general.nativeCursor", "1");
+        }
     }
 
     snprintf(payloadStr, sizeof(payloadStr), "%d", StreamConfig.width);

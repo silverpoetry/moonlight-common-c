@@ -83,6 +83,7 @@ typedef struct _QUEUED_ASYNC_CALLBACK {
             uint8_t left[DS_EFFECT_PAYLOAD_SIZE];
             uint8_t right[DS_EFFECT_PAYLOAD_SIZE];
         } dsAdaptiveTrigger;
+        SS_NATIVE_CURSOR_UPDATE nativeCursor;
     } data;
     LINKED_BLOCKING_QUEUE_ENTRY entry;
 } QUEUED_ASYNC_CALLBACK, *PQUEUED_ASYNC_CALLBACK;
@@ -140,6 +141,7 @@ static PPLT_CRYPTO_CONTEXT decryptionCtx;
 #define IDX_SET_MOTION_EVENT 10
 #define IDX_SET_RGB_LED 11
 #define IDX_DS_ADAPTIVE_TRIGGERS 12
+#define IDX_NATIVE_CURSOR 13
 
 #define CONTROL_STREAM_TIMEOUT_SEC 10
 #define CONTROL_STREAM_LINGER_TIMEOUT_SEC 2
@@ -157,6 +159,8 @@ static const short packetTypesGen3[] = {
     -1,     // Rumble triggers (unused)
     -1,     // Set motion event (unused)
     -1,     // Set RGB LED (unused)
+    -1,     // Set Adaptive Triggers (unused)
+    -1,     // Native cursor (unused)
 };
 static const short packetTypesGen4[] = {
     0x0606, // Request IDR frame
@@ -171,6 +175,8 @@ static const short packetTypesGen4[] = {
     -1,     // Rumble triggers (unused)
     -1,     // Set motion event (unused)
     -1,     // Set RGB LED (unused)
+    -1,     // Set Adaptive Triggers (unused)
+    -1,     // Native cursor (unused)
 };
 static const short packetTypesGen5[] = {
     0x0305, // Start A
@@ -185,6 +191,8 @@ static const short packetTypesGen5[] = {
     -1,     // Rumble triggers (unused)
     -1,     // Set motion event (unused)
     -1,     // Set RGB LED (unused)
+    -1,     // Set Adaptive Triggers (unused)
+    -1,     // Native cursor (unused)
 };
 static const short packetTypesGen7[] = {
     0x0305, // Start A
@@ -199,6 +207,8 @@ static const short packetTypesGen7[] = {
     -1,     // Rumble triggers (unused)
     -1,     // Set motion event (unused)
     -1,     // Set RGB LED (unused)
+    -1,     // Set Adaptive Triggers (unused)
+    0x5504, // Native cursor (Sunshine protocol extension)
 };
 static const short packetTypesGen7Enc[] = {
     0x0302, // Request IDR frame
@@ -214,6 +224,7 @@ static const short packetTypesGen7Enc[] = {
     0x5501, // Set motion event (Sunshine protocol extension)
     0x5502, // Set RGB LED (Sunshine protocol extension)
     0x5503, // Set Adaptive Triggers (Sunshine protocol extension)
+    0x5504, // Native cursor (Sunshine protocol extension)
 };
 
 static const char requestIdrFrameGen3[] = { 0, 0 };
@@ -883,6 +894,16 @@ static bool sendMessageAndDiscardReply(short ptype, short paylen, const void* pa
     return true;
 }
 
+static void freeQueuedAsyncCallback(PQUEUED_ASYNC_CALLBACK queuedCb) {
+    if (queuedCb != NULL) {
+        if (queuedCb->typeIndex == IDX_NATIVE_CURSOR) {
+            free((void*)queuedCb->data.nativeCursor.imageData);
+        }
+
+        free(queuedCb);
+    }
+}
+
 // This intercept function drops disconnect events to allow us to process
 // pending receives first. It works around what appears to be a bug in ENet
 // where pending disconnects can cause loss of unprocessed received data.
@@ -924,7 +945,7 @@ static void asyncCallbackThreadFunc(void* context) {
                 }
 
                 // Replace the old entry with the new one
-                free(queuedCb);
+                freeQueuedAsyncCallback(queuedCb);
                 queuedCb = nextCb;
             }
 
@@ -947,7 +968,7 @@ static void asyncCallbackThreadFunc(void* context) {
                 }
 
                 // Replace the old entry with the new one
-                free(queuedCb);
+                freeQueuedAsyncCallback(queuedCb);
                 queuedCb = nextCb;
             }
 
@@ -970,7 +991,7 @@ static void asyncCallbackThreadFunc(void* context) {
                 }
 
                 // Replace the old entry with the new one
-                free(queuedCb);
+                freeQueuedAsyncCallback(queuedCb);
                 queuedCb = nextCb;
             }
 
@@ -989,7 +1010,7 @@ static void asyncCallbackThreadFunc(void* context) {
                 }
 
                 // Replace the old entry with the new one
-                free(queuedCb);
+                freeQueuedAsyncCallback(queuedCb);
                 queuedCb = nextCb;
             }
 
@@ -1010,13 +1031,43 @@ static void asyncCallbackThreadFunc(void* context) {
                                                   queuedCb->data.dsAdaptiveTrigger.left,
                                                   queuedCb->data.dsAdaptiveTrigger.right);
             break;
+        case IDX_NATIVE_CURSOR:
+            // Cursor positions can arrive frequently, so collapse queued updates.
+            // If an older update contains a shape and a newer one only contains
+            // position/visibility, preserve the shape while taking the newest position.
+            while (LbqPeekQueueElement(&asyncCallbackQueue, (void**)&nextCb) == LBQ_SUCCESS &&
+                   nextCb->typeIndex == queuedCb->typeIndex) {
+                if (LbqPollQueueElement(&asyncCallbackQueue, (void**)&nextCb) != LBQ_SUCCESS) {
+                    break;
+                }
+
+                if ((queuedCb->data.nativeCursor.flags & LI_NATIVE_CURSOR_FLAG_SHAPE) &&
+                    !(nextCb->data.nativeCursor.flags & LI_NATIVE_CURSOR_FLAG_SHAPE)) {
+                    nextCb->data.nativeCursor.flags |= LI_NATIVE_CURSOR_FLAG_SHAPE;
+                    nextCb->data.nativeCursor.format = queuedCb->data.nativeCursor.format;
+                    nextCb->data.nativeCursor.width = queuedCb->data.nativeCursor.width;
+                    nextCb->data.nativeCursor.height = queuedCb->data.nativeCursor.height;
+                    nextCb->data.nativeCursor.hotspotX = queuedCb->data.nativeCursor.hotspotX;
+                    nextCb->data.nativeCursor.hotspotY = queuedCb->data.nativeCursor.hotspotY;
+                    nextCb->data.nativeCursor.shapeId = queuedCb->data.nativeCursor.shapeId;
+                    nextCb->data.nativeCursor.imageSize = queuedCb->data.nativeCursor.imageSize;
+                    nextCb->data.nativeCursor.imageData = queuedCb->data.nativeCursor.imageData;
+                    queuedCb->data.nativeCursor.imageData = NULL;
+                }
+
+                freeQueuedAsyncCallback(queuedCb);
+                queuedCb = nextCb;
+            }
+
+            ListenerCallbacks.nativeCursor(&queuedCb->data.nativeCursor);
+            break;
         default:
             // Unhandled packet type from queueAsyncCallback()
             LC_ASSERT(false);
             break;
         }
 
-        free(queuedCb);
+        freeQueuedAsyncCallback(queuedCb);
     }
 }
 
@@ -1026,7 +1077,8 @@ static bool needsAsyncCallback(unsigned short packetType) {
            packetType == packetTypes[IDX_SET_MOTION_EVENT] ||
            packetType == packetTypes[IDX_SET_RGB_LED] ||
            packetType == packetTypes[IDX_HDR_INFO] ||
-           packetType == packetTypes[IDX_DS_ADAPTIVE_TRIGGERS];
+           packetType == packetTypes[IDX_DS_ADAPTIVE_TRIGGERS] ||
+           packetType == packetTypes[IDX_NATIVE_CURSOR];
 }
 
 static void queueAsyncCallback(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLength) {
@@ -1036,7 +1088,7 @@ static void queueAsyncCallback(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLe
 
     LC_ASSERT(needsAsyncCallback(ctlHdr->type));
 
-    queuedCb = malloc(sizeof(*queuedCb));
+    queuedCb = calloc(1, sizeof(*queuedCb));
     if (!queuedCb) {
         return;
     }
@@ -1087,17 +1139,64 @@ static void queueAsyncCallback(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLe
         BbGetBytes(&bb, queuedCb->data.dsAdaptiveTrigger.right, DS_EFFECT_PAYLOAD_SIZE);
         queuedCb->typeIndex = IDX_DS_ADAPTIVE_TRIGGERS;
     }
+    else if (ctlHdr->type == packetTypes[IDX_NATIVE_CURSOR]) {
+        uint16_t reserved;
+        uint32_t x;
+        uint32_t y;
+
+        if (!BbGet8(&bb, &queuedCb->data.nativeCursor.flags) ||
+                !BbGet8(&bb, &queuedCb->data.nativeCursor.format) ||
+                !BbGet16(&bb, &reserved) ||
+                !BbGet32(&bb, &x) ||
+                !BbGet32(&bb, &y) ||
+                !BbGet16(&bb, &queuedCb->data.nativeCursor.width) ||
+                !BbGet16(&bb, &queuedCb->data.nativeCursor.height) ||
+                !BbGet16(&bb, &queuedCb->data.nativeCursor.hotspotX) ||
+                !BbGet16(&bb, &queuedCb->data.nativeCursor.hotspotY) ||
+                !BbGet32(&bb, &queuedCb->data.nativeCursor.shapeId) ||
+                !BbGet32(&bb, &queuedCb->data.nativeCursor.imageSize)) {
+            freeQueuedAsyncCallback(queuedCb);
+            return;
+        }
+
+        queuedCb->data.nativeCursor.x = (int32_t)x;
+        queuedCb->data.nativeCursor.y = (int32_t)y;
+
+        if (queuedCb->data.nativeCursor.imageSize > bb.length - bb.position) {
+            freeQueuedAsyncCallback(queuedCb);
+            return;
+        }
+
+        if ((queuedCb->data.nativeCursor.flags & LI_NATIVE_CURSOR_FLAG_SHAPE) &&
+                queuedCb->data.nativeCursor.imageSize > 0) {
+            uint8_t* imageData = malloc(queuedCb->data.nativeCursor.imageSize);
+            if (imageData == NULL) {
+                freeQueuedAsyncCallback(queuedCb);
+                return;
+            }
+
+            if (!BbGetBytes(&bb, imageData, queuedCb->data.nativeCursor.imageSize)) {
+                free(imageData);
+                freeQueuedAsyncCallback(queuedCb);
+                return;
+            }
+
+            queuedCb->data.nativeCursor.imageData = imageData;
+        }
+
+        queuedCb->typeIndex = IDX_NATIVE_CURSOR;
+    }
     else {
         // Unhandled packet type from needsAsyncCallback()
         LC_ASSERT(false);
-        free(queuedCb);
+        freeQueuedAsyncCallback(queuedCb);
         return;
     }
 
     err = LbqOfferQueueItem(&asyncCallbackQueue, queuedCb, &queuedCb->entry);
     if (err != LBQ_SUCCESS) {
         Limelog("Failed to queue async callback: %d\n", err);
-        free(queuedCb);
+        freeQueuedAsyncCallback(queuedCb);
     }
 }
 

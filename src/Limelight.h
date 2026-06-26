@@ -502,6 +502,8 @@ typedef struct _SS_NATIVE_CURSOR_UPDATE {
     uint16_t hotspotX;
     uint16_t hotspotY;
     uint32_t shapeId;
+    uint32_t scaleX;
+    uint32_t scaleY;
     uint32_t imageSize;
     const uint8_t* imageData;
 } SS_NATIVE_CURSOR_UPDATE, *PSS_NATIVE_CURSOR_UPDATE;

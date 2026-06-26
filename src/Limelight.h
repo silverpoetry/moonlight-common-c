@@ -486,6 +486,8 @@ typedef struct _SS_NATIVE_CURSOR_UPDATE {
     uint32_t shapeId;
     uint32_t imageSize;
     const uint8_t* imageData;
+    uint32_t scaleX;
+    uint32_t scaleY;
 } SS_NATIVE_CURSOR_UPDATE, *PSS_NATIVE_CURSOR_UPDATE;
 
 // This callback is invoked when Sunshine sends native cursor visibility, shape,

@@ -991,6 +991,8 @@ static void asyncCallbackThreadFunc(void* context) {
                     nextCb->data.nativeCursor.shapeId = queuedCb->data.nativeCursor.shapeId;
                     nextCb->data.nativeCursor.imageSize = queuedCb->data.nativeCursor.imageSize;
                     nextCb->data.nativeCursor.imageData = queuedCb->data.nativeCursor.imageData;
+                    nextCb->data.nativeCursor.scaleX = queuedCb->data.nativeCursor.scaleX;
+                    nextCb->data.nativeCursor.scaleY = queuedCb->data.nativeCursor.scaleY;
                     queuedCb->data.nativeCursor.imageData = NULL;
                     queuedCb->data.nativeCursor.imageSize = 0;
                 }
@@ -1094,6 +1096,8 @@ static void queueAsyncCallback(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLe
 
         queuedCb->data.nativeCursor.x = (int32_t)x;
         queuedCb->data.nativeCursor.y = (int32_t)y;
+        queuedCb->data.nativeCursor.scaleX = 1u << 16;
+        queuedCb->data.nativeCursor.scaleY = 1u << 16;
 
         if (queuedCb->data.nativeCursor.imageSize > bb.length - bb.position) {
             freeAsyncCallback(queuedCb);
@@ -1111,6 +1115,11 @@ static void queueAsyncCallback(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLe
             memcpy(imageData, &bb.buffer[bb.position], queuedCb->data.nativeCursor.imageSize);
             queuedCb->data.nativeCursor.imageData = imageData;
             BbAdvanceBuffer(&bb, queuedCb->data.nativeCursor.imageSize);
+        }
+
+        if (bb.length - bb.position >= sizeof(uint32_t) * 2) {
+            BbGet32(&bb, &queuedCb->data.nativeCursor.scaleX);
+            BbGet32(&bb, &queuedCb->data.nativeCursor.scaleY);
         }
     }
     else {

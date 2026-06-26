@@ -41,6 +41,8 @@ static void fakeClRumbleTriggers(uint16_t controllerNumber, uint16_t leftTrigger
 static void fakeClSetMotionEventState(uint16_t controllerNumber, uint8_t motionType, uint16_t reportRateHz) {}
 static void fakeClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t b) {}
 static void fakeClNativeCursor(PSS_NATIVE_CURSOR_UPDATE cursorUpdate) {}
+static void fakeClClipboardText(const uint8_t* text, uint32_t length) {}
+static void fakeClClipboardReady(void) {}
 
 static CONNECTION_LISTENER_CALLBACKS fakeClCallbacks = {
     .stageStarting = fakeClStageStarting,
@@ -56,6 +58,8 @@ static CONNECTION_LISTENER_CALLBACKS fakeClCallbacks = {
     .setMotionEventState = fakeClSetMotionEventState,
     .setControllerLED = fakeClSetControllerLED,
     .nativeCursor = fakeClNativeCursor,
+    .clipboardText = fakeClClipboardText,
+    .clipboardReady = fakeClClipboardReady,
 };
 
 void fixupMissingCallbacks(PDECODER_RENDERER_CALLBACKS* drCallbacks, PAUDIO_RENDERER_CALLBACKS* arCallbacks,
@@ -145,6 +149,12 @@ void fixupMissingCallbacks(PDECODER_RENDERER_CALLBACKS* drCallbacks, PAUDIO_REND
         }
         if ((*clCallbacks)->nativeCursor == NULL) {
             (*clCallbacks)->nativeCursor = fakeClNativeCursor;
+        }
+        if ((*clCallbacks)->clipboardText == NULL) {
+            (*clCallbacks)->clipboardText = fakeClClipboardText;
+        }
+        if ((*clCallbacks)->clipboardReady == NULL) {
+            (*clCallbacks)->clipboardReady = fakeClClipboardReady;
         }
     }
 }

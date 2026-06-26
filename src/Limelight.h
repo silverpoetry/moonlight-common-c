@@ -100,6 +100,10 @@ typedef struct _STREAM_CONFIGURATION {
     // in /launch and /resume requests.
     char remoteInputAesKey[16];
     char remoteInputAesIv[16];
+
+    // Requests Sunshine's native cursor extension. When enabled, the host may
+    // omit cursor pixels from video and send cursor metadata on the control stream.
+    bool enableNativeCursor;
 } STREAM_CONFIGURATION, *PSTREAM_CONFIGURATION;
 
 // Use this function to zero the stream configuration when allocated on the stack or heap
@@ -466,6 +470,28 @@ typedef void(*ConnListenerSetMotionEventState)(uint16_t controllerNumber, uint8_
 // This callback is invoked to set a controller's RGB LED (if present).
 typedef void(*ConnListenerSetControllerLED)(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t b);
 
+#define LI_NATIVE_CURSOR_FLAG_VISIBLE 0x01
+#define LI_NATIVE_CURSOR_FLAG_SHAPE   0x02
+#define LI_NATIVE_CURSOR_FORMAT_BGRA  0x01
+
+typedef struct _SS_NATIVE_CURSOR_UPDATE {
+    uint8_t flags;
+    uint8_t format;
+    int32_t x;
+    int32_t y;
+    uint16_t width;
+    uint16_t height;
+    uint16_t hotspotX;
+    uint16_t hotspotY;
+    uint32_t shapeId;
+    uint32_t imageSize;
+    const uint8_t* imageData;
+} SS_NATIVE_CURSOR_UPDATE, *PSS_NATIVE_CURSOR_UPDATE;
+
+// This callback is invoked when Sunshine sends native cursor visibility, shape,
+// or position updates via its control stream extension.
+typedef void(*ConnListenerNativeCursor)(PSS_NATIVE_CURSOR_UPDATE cursorUpdate);
+
 typedef struct _CONNECTION_LISTENER_CALLBACKS {
     ConnListenerStageStarting stageStarting;
     ConnListenerStageComplete stageComplete;
@@ -479,6 +505,7 @@ typedef struct _CONNECTION_LISTENER_CALLBACKS {
     ConnListenerRumbleTriggers rumbleTriggers;
     ConnListenerSetMotionEventState setMotionEventState;
     ConnListenerSetControllerLED setControllerLED;
+    ConnListenerNativeCursor nativeCursor;
 } CONNECTION_LISTENER_CALLBACKS, *PCONNECTION_LISTENER_CALLBACKS;
 
 // Use this function to zero the connection callbacks when allocated on the stack or heap

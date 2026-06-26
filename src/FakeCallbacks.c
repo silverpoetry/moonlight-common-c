@@ -40,6 +40,7 @@ static void fakeClSetHdrMode(bool enabled) {}
 static void fakeClRumbleTriggers(uint16_t controllerNumber, uint16_t leftTriggerMotor, uint16_t rightTriggerMotor) {}
 static void fakeClSetMotionEventState(uint16_t controllerNumber, uint8_t motionType, uint16_t reportRateHz) {}
 static void fakeClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t b) {}
+static void fakeClNativeCursor(PSS_NATIVE_CURSOR_UPDATE cursorUpdate) {}
 
 static CONNECTION_LISTENER_CALLBACKS fakeClCallbacks = {
     .stageStarting = fakeClStageStarting,
@@ -54,6 +55,7 @@ static CONNECTION_LISTENER_CALLBACKS fakeClCallbacks = {
     .rumbleTriggers = fakeClRumbleTriggers,
     .setMotionEventState = fakeClSetMotionEventState,
     .setControllerLED = fakeClSetControllerLED,
+    .nativeCursor = fakeClNativeCursor,
 };
 
 void fixupMissingCallbacks(PDECODER_RENDERER_CALLBACKS* drCallbacks, PAUDIO_RENDERER_CALLBACKS* arCallbacks,
@@ -140,6 +142,9 @@ void fixupMissingCallbacks(PDECODER_RENDERER_CALLBACKS* drCallbacks, PAUDIO_REND
         }
         if ((*clCallbacks)->setControllerLED == NULL) {
             (*clCallbacks)->setControllerLED = fakeClSetControllerLED;
+        }
+        if ((*clCallbacks)->nativeCursor == NULL) {
+            (*clCallbacks)->nativeCursor = fakeClNativeCursor;
         }
     }
 }

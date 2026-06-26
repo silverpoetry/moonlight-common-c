@@ -303,6 +303,10 @@ static PSDP_OPTION getAttributesList(char*urlSafeAddr) {
         err |= addAttributeString(&optionHead, "x-ss-general.encryptionEnabled", payloadStr);
     }
 
+    if (StreamConfig.enableNativeCursor) {
+        err |= addAttributeString(&optionHead, "x-ss-general.nativeCursor", "1");
+    }
+
     snprintf(payloadStr, sizeof(payloadStr), "%d", StreamConfig.width);
     err |= addAttributeString(&optionHead, "x-nv-video[0].clientViewportWd", payloadStr);
     snprintf(payloadStr, sizeof(payloadStr), "%d", StreamConfig.height);

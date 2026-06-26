@@ -1143,6 +1143,8 @@ static void queueAsyncCallback(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLe
         uint16_t reserved;
         uint32_t x;
         uint32_t y;
+        uint32_t scaleX = 1 << 16;
+        uint32_t scaleY = 1 << 16;
 
         if (!BbGet8(&bb, &queuedCb->data.nativeCursor.flags) ||
                 !BbGet8(&bb, &queuedCb->data.nativeCursor.format) ||
@@ -1184,6 +1186,16 @@ static void queueAsyncCallback(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLe
             queuedCb->data.nativeCursor.imageData = imageData;
         }
 
+        if (bb.length - bb.position >= sizeof(scaleX) + sizeof(scaleY)) {
+            if (!BbGet32(&bb, &scaleX) ||
+                    !BbGet32(&bb, &scaleY)) {
+                freeQueuedAsyncCallback(queuedCb);
+                return;
+            }
+        }
+
+        queuedCb->data.nativeCursor.scaleX = scaleX;
+        queuedCb->data.nativeCursor.scaleY = scaleY;
         queuedCb->typeIndex = IDX_NATIVE_CURSOR;
     }
     else {

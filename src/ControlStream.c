@@ -7,6 +7,20 @@
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
 #endif
 
+#define CLIPBOARD_VERSION 1
+#define CLIPBOARD_OP_HELLO 0x01
+#define CLIPBOARD_OP_SET 0x02
+#define CLIPBOARD_OP_REQUEST 0x03
+#define CLIPBOARD_OP_ACK 0x04
+#define CLIPBOARD_OP_NACK 0x05
+#define CLIPBOARD_MIME_TEXT_UTF8 0x01
+#define CLIPBOARD_FLAG_CAN_SEND 0x01
+#define CLIPBOARD_FLAG_CAN_RECEIVE 0x02
+#define CLIPBOARD_MAX_TEXT_BYTES (1024 * 1024)
+#define CLIPBOARD_MAX_SEND_CHUNK_BYTES (30 * 1024)
+#define CLIPBOARD_MAX_RECV_CHUNK_BYTES (60 * 1024)
+#define CLIPBOARD_PTYPE 0x3001
+
 // NV control stream packet header for TCP
 typedef struct _NVCTL_TCP_PACKET_HEADER {
     unsigned short type;
@@ -142,6 +156,7 @@ static PPLT_CRYPTO_CONTEXT decryptionCtx;
 #define IDX_SET_RGB_LED 11
 #define IDX_DS_ADAPTIVE_TRIGGERS 12
 #define IDX_NATIVE_CURSOR 13
+#define IDX_CLIPBOARD 14
 
 #define CONTROL_STREAM_TIMEOUT_SEC 10
 #define CONTROL_STREAM_LINGER_TIMEOUT_SEC 2
@@ -161,6 +176,7 @@ static const short packetTypesGen3[] = {
     -1,     // Set RGB LED (unused)
     -1,     // Set Adaptive Triggers (unused)
     -1,     // Native cursor (unused)
+    -1,     // Clipboard sync (unused)
 };
 static const short packetTypesGen4[] = {
     0x0606, // Request IDR frame
@@ -177,6 +193,7 @@ static const short packetTypesGen4[] = {
     -1,     // Set RGB LED (unused)
     -1,     // Set Adaptive Triggers (unused)
     -1,     // Native cursor (unused)
+    -1,     // Clipboard sync (unused)
 };
 static const short packetTypesGen5[] = {
     0x0305, // Start A
@@ -193,6 +210,7 @@ static const short packetTypesGen5[] = {
     -1,     // Set RGB LED (unused)
     -1,     // Set Adaptive Triggers (unused)
     -1,     // Native cursor (unused)
+    -1,     // Clipboard sync (unused)
 };
 static const short packetTypesGen7[] = {
     0x0305, // Start A
@@ -209,6 +227,7 @@ static const short packetTypesGen7[] = {
     -1,     // Set RGB LED (unused)
     -1,     // Set Adaptive Triggers (unused)
     0x5504, // Native cursor (Sunshine protocol extension)
+    -1,     // Clipboard sync (unused)
 };
 static const short packetTypesGen7Enc[] = {
     0x0302, // Request IDR frame
@@ -225,6 +244,7 @@ static const short packetTypesGen7Enc[] = {
     0x5502, // Set RGB LED (Sunshine protocol extension)
     0x5503, // Set Adaptive Triggers (Sunshine protocol extension)
     0x5504, // Native cursor (Sunshine protocol extension)
+    CLIPBOARD_PTYPE, // Clipboard sync (Sunshine protocol extension)
 };
 
 static const char requestIdrFrameGen3[] = { 0, 0 };
@@ -304,6 +324,14 @@ static short* packetTypes;
 static short* payloadLengths;
 static char**preconstructedPayloads;
 static bool supportsIdrFrameRequest;
+static bool clipboardNegotiated;
+static bool clipboardHostCanSend;
+static bool clipboardHostCanReceive;
+static uint32_t clipboardNextSequence;
+static uint32_t clipboardRecvSequence;
+static uint32_t clipboardRecvTotalLength;
+static uint32_t clipboardRecvOffset;
+static uint8_t* clipboardRecvBuffer;
 
 #define LOSS_REPORT_INTERVAL_MS 50
 #define PERIODIC_PING_INTERVAL_MS 100
@@ -367,6 +395,14 @@ int initializeControlStream(void) {
     decryptionCtx = PltCreateCryptoContext();
     hdrEnabled = false;
     memset(&hdrMetadata, 0, sizeof(hdrMetadata));
+    clipboardNegotiated = false;
+    clipboardHostCanSend = false;
+    clipboardHostCanReceive = false;
+    clipboardNextSequence = 1;
+    clipboardRecvSequence = 0;
+    clipboardRecvTotalLength = 0;
+    clipboardRecvOffset = 0;
+    clipboardRecvBuffer = NULL;
 
     return 0;
 }
@@ -386,6 +422,8 @@ void destroyControlStream(void) {
     LC_ASSERT(stopping);
     PltDestroyCryptoContext(encryptionCtx);
     PltDestroyCryptoContext(decryptionCtx);
+    free(clipboardRecvBuffer);
+    clipboardRecvBuffer = NULL;
     PltCloseEvent(&idrFrameRequiredEvent);
     freeBasicLbqList(LbqDestroyLinkedBlockingQueue(&referenceFrameControlQueue));
     freeBasicLbqList(LbqDestroyLinkedBlockingQueue(&frameFecStatusQueue));
@@ -715,6 +753,8 @@ static bool sendMessageEnet(short ptype, short paylen, const void* payload, uint
         PNVCTL_ENCRYPTED_PACKET_HEADER encPacket;
         PNVCTL_ENET_PACKET_HEADER_V2 packet;
         char tempBuffer[256];
+        void* plaintextBuffer = tempBuffer;
+        size_t plaintextLength = sizeof(*packet) + paylen;
 
         enetPacket = enet_packet_create(NULL,
                                         sizeof(*encPacket) + AES_GCM_TAG_LENGTH + sizeof(*packet) + paylen,
@@ -733,8 +773,16 @@ static bool sendMessageEnet(short ptype, short paylen, const void* payload, uint
         encPacket->seq = currentEnetSequenceNumber++;
 
         // Construct the plaintext data for encryption
-        LC_ASSERT(sizeof(*packet) + paylen < sizeof(tempBuffer));
-        packet = (PNVCTL_ENET_PACKET_HEADER_V2)tempBuffer;
+        if (plaintextLength > sizeof(tempBuffer)) {
+            plaintextBuffer = malloc(plaintextLength);
+            if (plaintextBuffer == NULL) {
+                enet_packet_destroy(enetPacket);
+                PltUnlockMutex(&enetMutex);
+                return false;
+            }
+        }
+
+        packet = (PNVCTL_ENET_PACKET_HEADER_V2)plaintextBuffer;
         packet->type = ptype;
         packet->payloadLength = paylen;
         memcpy(&packet[1], payload, paylen);
@@ -742,9 +790,15 @@ static bool sendMessageEnet(short ptype, short paylen, const void* payload, uint
         // Encrypt the data into the final packet (and byteswap for BE machines)
         if (!encryptControlMessage(encPacket, packet)) {
             Limelog("Failed to encrypt control stream message\n");
+            if (plaintextBuffer != tempBuffer) {
+                free(plaintextBuffer);
+            }
             enet_packet_destroy(enetPacket);
             PltUnlockMutex(&enetMutex);
             return false;
+        }
+        if (plaintextBuffer != tempBuffer) {
+            free(plaintextBuffer);
         }
 
         // enetMutex still locked here
@@ -901,6 +955,183 @@ static void freeQueuedAsyncCallback(PQUEUED_ASYNC_CALLBACK queuedCb) {
         }
 
         free(queuedCb);
+    }
+}
+
+static void resetClipboardReassembly(void) {
+    clipboardRecvSequence = 0;
+    clipboardRecvTotalLength = 0;
+    clipboardRecvOffset = 0;
+    free(clipboardRecvBuffer);
+    clipboardRecvBuffer = NULL;
+}
+
+static bool sendClipboardMessage(uint8_t op, uint8_t flags, uint32_t sequence, const uint8_t* text, uint32_t length) {
+    if (!IS_SUNSHINE() || !StreamConfig.enableClipboardSync || !encryptedControlStream) {
+        return false;
+    }
+
+    if (length > CLIPBOARD_MAX_TEXT_BYTES) {
+        return false;
+    }
+
+    for (uint32_t offset = 0; offset <= length; offset += CLIPBOARD_MAX_SEND_CHUNK_BYTES) {
+        uint32_t remaining = length - offset;
+        uint32_t chunkLength = length == 0 ? 0 : (remaining > CLIPBOARD_MAX_SEND_CHUNK_BYTES ? CLIPBOARD_MAX_SEND_CHUNK_BYTES : remaining);
+        char* payload = malloc(20 + chunkLength);
+        if (payload == NULL) {
+            return false;
+        }
+
+        BYTE_BUFFER bb;
+        BbInitializeWrappedBuffer(&bb, payload, 0, 20 + chunkLength, BYTE_ORDER_LITTLE);
+        BbPut8(&bb, CLIPBOARD_VERSION);
+        BbPut8(&bb, op);
+        BbPut8(&bb, CLIPBOARD_MIME_TEXT_UTF8);
+        BbPut8(&bb, flags);
+        BbPut32(&bb, sequence);
+        BbPut32(&bb, length);
+        BbPut32(&bb, offset);
+        BbPut32(&bb, chunkLength);
+
+        if (chunkLength != 0) {
+            memcpy(payload + 20, text + offset, chunkLength);
+        }
+
+        bool sent = sendMessageAndForget(packetTypes[IDX_CLIPBOARD],
+                                         20 + chunkLength,
+                                         payload,
+                                         CTRL_CHANNEL_GENERIC,
+                                         ENET_PACKET_FLAG_RELIABLE,
+                                         length != 0 && chunkLength != remaining);
+        free(payload);
+        if (!sent) {
+            return false;
+        }
+
+        if (length == 0 || chunkLength == remaining) {
+            break;
+        }
+    }
+
+    return true;
+}
+
+static bool sendClipboardHello(void) {
+    return sendClipboardMessage(CLIPBOARD_OP_HELLO,
+                                CLIPBOARD_FLAG_CAN_SEND | CLIPBOARD_FLAG_CAN_RECEIVE,
+                                clipboardNextSequence++,
+                                NULL,
+                                0);
+}
+
+int LiSendClipboardText(const uint8_t* text, uint32_t length) {
+    if (!clipboardNegotiated || !clipboardHostCanReceive || text == NULL || length > CLIPBOARD_MAX_TEXT_BYTES) {
+        return -1;
+    }
+
+    return sendClipboardMessage(CLIPBOARD_OP_SET,
+                                CLIPBOARD_FLAG_CAN_SEND | CLIPBOARD_FLAG_CAN_RECEIVE,
+                                clipboardNextSequence++,
+                                text,
+                                length) ? 0 : -1;
+}
+
+static void handleClipboardMessage(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLength) {
+    BYTE_BUFFER bb;
+    uint8_t version;
+    uint8_t op;
+    uint8_t mimeType;
+    uint8_t flags;
+    uint32_t sequence;
+    uint32_t totalLength;
+    uint32_t chunkOffset;
+    uint32_t chunkLength;
+
+    if (!StreamConfig.enableClipboardSync || packetLength < (int)(sizeof(*ctlHdr) + 20)) {
+        return;
+    }
+
+    BbInitializeWrappedBuffer(&bb, (char*)ctlHdr, sizeof(*ctlHdr), packetLength - sizeof(*ctlHdr), BYTE_ORDER_LITTLE);
+    if (!BbGet8(&bb, &version) ||
+            !BbGet8(&bb, &op) ||
+            !BbGet8(&bb, &mimeType) ||
+            !BbGet8(&bb, &flags) ||
+            !BbGet32(&bb, &sequence) ||
+            !BbGet32(&bb, &totalLength) ||
+            !BbGet32(&bb, &chunkOffset) ||
+            !BbGet32(&bb, &chunkLength)) {
+        return;
+    }
+
+    if (version != CLIPBOARD_VERSION ||
+            mimeType != CLIPBOARD_MIME_TEXT_UTF8 ||
+            totalLength > CLIPBOARD_MAX_TEXT_BYTES ||
+            chunkLength > CLIPBOARD_MAX_RECV_CHUNK_BYTES ||
+            chunkOffset > totalLength ||
+            chunkLength > totalLength - chunkOffset ||
+            bb.length - bb.position != chunkLength) {
+        resetClipboardReassembly();
+        sendClipboardMessage(CLIPBOARD_OP_NACK, 0, sequence, NULL, 0);
+        return;
+    }
+
+    switch (op) {
+    case CLIPBOARD_OP_HELLO:
+        clipboardNegotiated = true;
+        clipboardHostCanSend = (flags & CLIPBOARD_FLAG_CAN_SEND) != 0;
+        clipboardHostCanReceive = (flags & CLIPBOARD_FLAG_CAN_RECEIVE) != 0;
+        if (clipboardHostCanReceive) {
+            ListenerCallbacks.clipboardReady();
+        }
+        break;
+
+    case CLIPBOARD_OP_SET:
+        if (!clipboardNegotiated || !clipboardHostCanSend) {
+            sendClipboardMessage(CLIPBOARD_OP_NACK, 0, sequence, NULL, 0);
+            return;
+        }
+
+        if (chunkOffset == 0) {
+            resetClipboardReassembly();
+            clipboardRecvBuffer = malloc(totalLength == 0 ? 1 : totalLength);
+            if (clipboardRecvBuffer == NULL) {
+                sendClipboardMessage(CLIPBOARD_OP_NACK, 0, sequence, NULL, 0);
+                return;
+            }
+
+            clipboardRecvSequence = sequence;
+            clipboardRecvTotalLength = totalLength;
+        }
+
+        if (clipboardRecvSequence != sequence ||
+                clipboardRecvTotalLength != totalLength ||
+                clipboardRecvOffset != chunkOffset ||
+                clipboardRecvBuffer == NULL) {
+            resetClipboardReassembly();
+            sendClipboardMessage(CLIPBOARD_OP_NACK, 0, sequence, NULL, 0);
+            return;
+        }
+
+        if (chunkLength != 0) {
+            memcpy(clipboardRecvBuffer + chunkOffset, &bb.buffer[bb.position], chunkLength);
+        }
+        clipboardRecvOffset = chunkOffset + chunkLength;
+
+        if (clipboardRecvOffset == totalLength) {
+            ListenerCallbacks.clipboardText(clipboardRecvBuffer, totalLength);
+            resetClipboardReassembly();
+            sendClipboardMessage(CLIPBOARD_OP_ACK, 0, sequence, NULL, 0);
+        }
+        break;
+
+    case CLIPBOARD_OP_ACK:
+    case CLIPBOARD_OP_NACK:
+        break;
+
+    default:
+        sendClipboardMessage(CLIPBOARD_OP_NACK, 0, sequence, NULL, 0);
+        break;
     }
 }
 
@@ -1406,6 +1637,9 @@ static void controlReceiveThreadFunc(void* context) {
             // Process client callbacks in a separate thread
             if (needsAsyncCallback(ctlHdr->type)) {
                 queueAsyncCallback(ctlHdr, packetLength);
+            }
+            else if (ctlHdr->type == packetTypes[IDX_CLIPBOARD]) {
+                handleClipboardMessage(ctlHdr, packetLength);
             }
             else if (ctlHdr->type == packetTypes[IDX_TERMINATION]) {
                 BYTE_BUFFER bb;
@@ -2043,6 +2277,12 @@ int startControlStream(void) {
             client = NULL;
         }
         return err;
+    }
+
+    if (StreamConfig.enableClipboardSync && IS_SUNSHINE() && encryptedControlStream) {
+        if (!sendClipboardHello()) {
+            Limelog("Clipboard sync: failed to send HELLO\n");
+        }
     }
 
     err = PltCreateThread("LossStats", lossStatsThreadFunc, NULL, &lossStatsThread);

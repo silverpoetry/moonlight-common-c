@@ -105,6 +105,10 @@ typedef struct _STREAM_CONFIGURATION {
     // stop compositing the cursor into the video stream and send cursor shape
     // updates over the control stream instead.
     int enableNativeCursor;
+
+    // Requests Sunshine's clipboard sync extension. When enabled, UTF-8 text
+    // clipboard contents may be exchanged over the encrypted control stream.
+    int enableClipboardSync;
 } STREAM_CONFIGURATION, *PSTREAM_CONFIGURATION;
 
 // Use this function to zero the stream configuration when allocated on the stack or heap
@@ -511,6 +515,14 @@ typedef struct _SS_NATIVE_CURSOR_UPDATE {
 // This callback is invoked when a Sunshine host sends a native cursor update.
 typedef void(*ConnListenerNativeCursor)(PSS_NATIVE_CURSOR_UPDATE cursorUpdate);
 
+// This callback is invoked when Sunshine sends text clipboard content via its
+// encrypted control stream extension.
+typedef void(*ConnListenerClipboardText)(const uint8_t* text, uint32_t length);
+
+// This callback is invoked when the host has acknowledged clipboard sync
+// support and the client may begin sending clipboard updates.
+typedef void(*ConnListenerClipboardReady)(void);
+
 typedef struct _CONNECTION_LISTENER_CALLBACKS {
     ConnListenerStageStarting stageStarting;
     ConnListenerStageComplete stageComplete;
@@ -526,6 +538,8 @@ typedef struct _CONNECTION_LISTENER_CALLBACKS {
     ConnListenerSetControllerLED setControllerLED;
     ConnListenerSetAdaptiveTriggers setAdaptiveTriggers;
     ConnListenerNativeCursor nativeCursor;
+    ConnListenerClipboardText clipboardText;
+    ConnListenerClipboardReady clipboardReady;
 } CONNECTION_LISTENER_CALLBACKS, *PCONNECTION_LISTENER_CALLBACKS;
 
 // Use this function to zero the connection callbacks when allocated on the stack or heap
@@ -739,6 +753,10 @@ int LiSendKeyboardEvent2(short keyCode, char keyAction, char modifiers, char fla
 
 // This function queues an UTF-8 encoded text to be sent to the remote server.
 int LiSendUtf8TextEvent(const char *text, unsigned int length);
+
+// Sends UTF-8 text clipboard content to a Sunshine host using the clipboard
+// sync control stream extension.
+int LiSendClipboardText(const uint8_t* text, uint32_t length);
 
 // Button flags
 #define A_FLAG     0x1000

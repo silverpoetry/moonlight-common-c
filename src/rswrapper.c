@@ -39,7 +39,9 @@
 #define gemm DECORATE_FUNC(gemm, ISA_SUFFIX)
 #define invert_mat DECORATE_FUNC(invert_mat, ISA_SUFFIX)
 
-#if !defined(NXDK) && (defined(__x86_64__) || defined(__i386__) || (defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_AMD64))))
+// Bionic's assert.h intentionally has no include guard, so Android's Clang
+// cannot compile nanors repeatedly inside target-specific attribute regions.
+#if !defined(NXDK) && !defined(__ANDROID__) && (defined(__x86_64__) || defined(__i386__) || (defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_AMD64))))
 
   // Compile a variant for SSSE3
   #if defined(__clang__)
@@ -157,7 +159,7 @@ void reed_solomon_init(void) {
     reed_solomon_init_ssse3();
   } else
 
-#elif defined(__x86_64__)
+#elif defined(__x86_64__) && !defined(__ANDROID__)
   // gcc & clang
   if (__builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512bw")) {
     reed_solomon_new_fn = reed_solomon_new_avx512;

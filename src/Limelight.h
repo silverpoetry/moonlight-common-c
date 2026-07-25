@@ -108,8 +108,8 @@ typedef struct _STREAM_CONFIGURATION {
     // updates over the control stream instead.
     int enableNativeCursor;
 
-    // Requests Sunshine's clipboard sync extension. When enabled, UTF-8 text
-    // clipboard contents may be exchanged over the encrypted control stream.
+    // Requests Sunshine's clipboard sync extension. Formats and directions are
+    // negotiated using clipboardCapabilities over the encrypted control stream.
     int enableClipboardSync;
 
     // Clipboard v2 capabilities requested by the client. Set to a combination

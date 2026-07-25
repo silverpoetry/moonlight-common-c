@@ -738,6 +738,21 @@ static bool isPacketSentWaitingForAck(ENetPacket* packet) {
     return false;
 }
 
+// Must be called with enetMutex held
+static void applyLocalEnetThrottlePolicy(void) {
+    if (!StreamConfig.disableAdaptiveInputThrottling) {
+        return;
+    }
+
+    // Keep unreliable control packets ordered and non-retransmitted, but prevent
+    // ENet's RTT-based throttle from intentionally dropping a percentage of them.
+    // This is deliberately local-only: enet_peer_throttle_configure() would also
+    // send a throttle configuration command to the host.
+    peer->packetThrottle = ENET_PEER_PACKET_THROTTLE_SCALE;
+    peer->packetThrottleLimit = ENET_PEER_PACKET_THROTTLE_SCALE;
+    peer->packetThrottleDeceleration = 0;
+}
+
 static bool sendMessageEnet(short ptype, short paylen, const void* payload, uint8_t channelId, uint32_t flags, bool moreData) {
     ENetPacket* enetPacket;
     int err;
@@ -817,6 +832,8 @@ static bool sendMessageEnet(short ptype, short paylen, const void* payload, uint
 
         PltLockMutex(&enetMutex);
     }
+
+    applyLocalEnetThrottlePolicy();
 
     volatile bool packetFreed = false;
 
@@ -2172,6 +2189,13 @@ int startControlStream(void) {
 
         // Ensure the connect verify ACK is sent immediately
         enet_host_flush(client);
+
+        if (StreamConfig.disableAdaptiveInputThrottling) {
+            PltLockMutex(&enetMutex);
+            applyLocalEnetThrottlePolicy();
+            PltUnlockMutex(&enetMutex);
+            Limelog("ENet adaptive input throttling is disabled\n");
+        }
 
 #ifdef __3DS__
         // Set the peer timeout to 1 minute and limit backoff to 2x RTT

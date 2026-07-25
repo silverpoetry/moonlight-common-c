@@ -109,6 +109,11 @@ typedef struct _STREAM_CONFIGURATION {
     // Requests Sunshine's clipboard sync extension. When enabled, UTF-8 text
     // clipboard contents may be exchanged over the encrypted control stream.
     int enableClipboardSync;
+
+    // Disables ENet's adaptive packet throttling for the local control stream
+    // sender. Unreliable input packets remain ordered and are not retransmitted,
+    // but ENet will no longer intentionally discard them based on measured RTT.
+    int disableAdaptiveInputThrottling;
 } STREAM_CONFIGURATION, *PSTREAM_CONFIGURATION;
 
 // Use this function to zero the stream configuration when allocated on the stack or heap

@@ -824,6 +824,9 @@ int LiSendClipboardBlobReference(uint8_t targetMimeType,
 // Releases the current Clipboard v2 item without replacing it.
 int LiReleaseClipboardContent(void);
 
+// Returns this connection's random Clipboard v2 endpoint identity.
+uint64_t LiGetClipboardOriginId(void);
+
 // Button flags
 #define A_FLAG     0x1000
 #define B_FLAG     0x2000

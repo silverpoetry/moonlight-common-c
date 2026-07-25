@@ -1365,6 +1365,10 @@ int LiReleaseClipboardContent(void) {
                                   0) ? 0 : -1;
 }
 
+uint64_t LiGetClipboardOriginId(void) {
+    return clipboardOriginId;
+}
+
 int LiSendClipboardText(const uint8_t* text, uint32_t length) {
     if (!clipboardNegotiated || text == NULL || length > LI_CLIPBOARD_MAX_TEXT_BYTES ||
             !LiIsValidUtf8ClipboardText(text, length)) {

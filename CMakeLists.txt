@@ -117,3 +117,10 @@ target_include_directories(moonlight-common-c SYSTEM PRIVATE
 )
 
 target_compile_definitions(moonlight-common-c PRIVATE HAS_SOCKLEN_T)
+
+include(CTest)
+if (BUILD_TESTING)
+  add_executable(srtp-test tests/SrtpTest.c)
+  target_link_libraries(srtp-test PRIVATE moonlight-common-c)
+  add_test(NAME srtp-test COMMAND srtp-test)
+endif()

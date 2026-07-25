@@ -960,6 +960,47 @@ typedef struct _RTP_AUDIO_STATS {
 
 const RTP_AUDIO_STATS* LiGetRTPAudioStats(void);
 
+// Microphone uplink is a Sunshine extension that sends Opus frames as
+// AEAD_AES_128_GCM SRTP on the existing audio UDP flow. The host must
+// advertise LI_FF_MICROPHONE_UPLINK before these APIs may be used.
+#define LI_MICROPHONE_FRAME_FLAG_DISCONTINUITY 0x01
+
+typedef struct _MICROPHONE_UPLINK_STATS {
+    uint32_t packetsQueued;
+    uint32_t packetsSent;
+    uint32_t packetsDropped;
+    uint32_t sendFailures;
+    uint8_t fractionLost;
+    int32_t cumulativePacketsLost;
+    uint32_t extendedHighestSequenceNumber;
+    uint32_t interarrivalJitter;
+    uint64_t lastReceiverReportTimeMs;
+} MICROPHONE_UPLINK_STATS, *PMICROPHONE_UPLINK_STATS;
+
+// Returns true only after RTSP negotiation confirms that the host supports
+// microphone uplink on the current connection.
+bool LiIsMicrophoneUplinkSupported(void);
+
+// Starts a fresh SRTP source for microphone uplink. The caller remains
+// responsible for microphone capture and Opus encoding.
+int LiStartMicrophoneUplink(void);
+
+// Queues one Opus frame for transmission. captureTimeUs must use a monotonic
+// clock. sampleCount is normally 960 for a 20 ms frame at 48 kHz.
+int LiSendMicrophoneOpusFrame(const uint8_t* opusData, uint16_t opusLength,
+                              uint16_t sampleCount, uint64_t captureTimeUs,
+                              uint8_t flags);
+
+// Stops the current source, discards queued frames, and sends SRTCP BYE.
+void LiStopMicrophoneUplink(void);
+
+// Returns a read-only snapshot. The receiver-report fields are updated only
+// after an authenticated SRTCP receiver report is received from the host.
+const MICROPHONE_UPLINK_STATS* LiGetMicrophoneUplinkStats(void);
+
+// Returns a 0-100 packet loss estimate suitable for OPUS_SET_PACKET_LOSS_PERC.
+int LiGetMicrophoneUplinkPacketLossPercent(void);
+
 // Returns a pointer to a struct containing various statistics about the RTP video stream.
 // The data should be considered read-only and must not be modified.
 // Right now this is mainly used to track total video and FEC packets, as there are
@@ -1085,6 +1126,7 @@ void LiRequestIdrFrame(void);
 #define LI_FF_CONTROLLER_TOUCH_EVENTS 0x02 // LiSendControllerTouchEvent() supported
 #define LI_FF_TOUCHPAD_EVENTS         0x10 // LiSendTouchpadEvent() supported
 #define LI_FF_TOUCHPAD_FRAME_EVENTS   0x20 // LiSendTouchpadFrameEvent() supported
+#define LI_FF_MICROPHONE_UPLINK       0x40 // SRTP Opus microphone uplink on the audio UDP flow
 uint32_t LiGetHostFeatureFlags(void);
 
 #ifdef __cplusplus

@@ -1,8 +1,10 @@
 #include "Limelight-internal.h"
 
 #ifdef USE_MBEDTLS
+#include <mbedtls/aes.h>
 #include <mbedtls/entropy.h>
 #include <mbedtls/ctr_drbg.h>
+#include <mbedtls/md.h>
 #include <mbedtls/version.h>
 
 mbedtls_entropy_context EntropyContext;
@@ -15,6 +17,7 @@ bool RandomStateInitialized = false;
 
 #else
 #include <openssl/evp.h>
+#include <openssl/hmac.h>
 #include <openssl/rand.h>
 #endif
 
@@ -33,12 +36,13 @@ static int addPkcs7PaddingInPlace(unsigned char* plaintext, int plaintextLen) {
 // For GCM, the IV can change from message to message without CIPHER_FLAG_RESET_IV.
 // CIPHER_FLAG_RESET_IV is only required for GCM when the IV length changes.
 // Changing the key between encrypt/decrypt calls on a single context is not supported.
-bool PltEncryptMessage(PPLT_CRYPTO_CONTEXT ctx, int algorithm, int flags,
-                       unsigned char* key, int keyLength,
-                       unsigned char* iv, int ivLength,
-                       unsigned char* tag, int tagLength,
-                       unsigned char* inputData, int inputDataLength,
-                       unsigned char* outputData, int* outputDataLength) {
+bool PltEncryptMessageEx(PPLT_CRYPTO_CONTEXT ctx, int algorithm, int flags,
+                         unsigned char* key, int keyLength,
+                         unsigned char* iv, int ivLength,
+                         unsigned char* aad, int aadLength,
+                         unsigned char* tag, int tagLength,
+                         unsigned char* inputData, int inputDataLength,
+                         unsigned char* outputData, int* outputDataLength) {
 #ifdef USE_MBEDTLS
     mbedtls_cipher_mode_t cipherMode;
     size_t outLength;
@@ -87,7 +91,7 @@ bool PltEncryptMessage(PPLT_CRYPTO_CONTEXT ctx, int algorithm, int flags,
         size_t encryptedLength = 0;
         unsigned char * encryptedData = tag;
         size_t encryptedCapacity = inputDataLength + tagLength;
-        if (mbedtls_cipher_auth_encrypt_ext(&ctx->ctx, iv, ivLength, NULL, 0, inputData, inputDataLength, encryptedData,
+        if (mbedtls_cipher_auth_encrypt_ext(&ctx->ctx, iv, ivLength, aad, aadLength, inputData, inputDataLength, encryptedData,
                                             encryptedCapacity, &encryptedLength, tagLength) != 0) {
             return false;
         }
@@ -101,7 +105,7 @@ bool PltEncryptMessage(PPLT_CRYPTO_CONTEXT ctx, int algorithm, int flags,
         // Copy back tag
         memcpy(encryptedData, tagTemp, tagLength);
 #else
-        if (mbedtls_cipher_auth_encrypt(&ctx->ctx, iv, ivLength, NULL, 0, inputData, inputDataLength, outputData, &outLength, tag, tagLength) != 0) {
+        if (mbedtls_cipher_auth_encrypt(&ctx->ctx, iv, ivLength, aad, aadLength, inputData, inputDataLength, outputData, &outLength, tag, tagLength) != 0) {
             return false;
         }
 #endif
@@ -197,6 +201,15 @@ bool PltEncryptMessage(PPLT_CRYPTO_CONTEXT ctx, int algorithm, int flags,
         return false;
     }
 
+    if (aadLength > 0) {
+        int aadOutputLength;
+
+        LC_ASSERT(algorithm == ALGORITHM_AES_GCM);
+        if (EVP_EncryptUpdate(ctx->ctx, NULL, &aadOutputLength, aad, aadLength) != 1) {
+            return false;
+        }
+    }
+
     if (EVP_EncryptUpdate(ctx->ctx, outputData, outputDataLength, inputData, inputDataLength) != 1) {
         return false;
     }
@@ -228,17 +241,33 @@ bool PltEncryptMessage(PPLT_CRYPTO_CONTEXT ctx, int algorithm, int flags,
 #endif
 }
 
-// When CBC is used, outputData buffer must be allocated such that the buffer length is
-// at least ROUND_TO_PKCS7_PADDED_LEN(inputDataLength) to allow room for PKCS7 padding.
-// For GCM, the IV can change from message to message without CIPHER_FLAG_RESET_IV.
-// CIPHER_FLAG_RESET_IV is only required for GCM when the IV length changes.
-// Changing the key between encrypt/decrypt calls on a single context is not supported.
-bool PltDecryptMessage(PPLT_CRYPTO_CONTEXT ctx, int algorithm, int flags,
+bool PltEncryptMessage(PPLT_CRYPTO_CONTEXT ctx, int algorithm, int flags,
                        unsigned char* key, int keyLength,
                        unsigned char* iv, int ivLength,
                        unsigned char* tag, int tagLength,
                        unsigned char* inputData, int inputDataLength,
                        unsigned char* outputData, int* outputDataLength) {
+    return PltEncryptMessageEx(ctx, algorithm, flags,
+                               key, keyLength,
+                               iv, ivLength,
+                               NULL, 0,
+                               tag, tagLength,
+                               inputData, inputDataLength,
+                               outputData, outputDataLength);
+}
+
+// When CBC is used, outputData buffer must be allocated such that the buffer length is
+// at least ROUND_TO_PKCS7_PADDED_LEN(inputDataLength) to allow room for PKCS7 padding.
+// For GCM, the IV can change from message to message without CIPHER_FLAG_RESET_IV.
+// CIPHER_FLAG_RESET_IV is only required for GCM when the IV length changes.
+// Changing the key between encrypt/decrypt calls on a single context is not supported.
+bool PltDecryptMessageEx(PPLT_CRYPTO_CONTEXT ctx, int algorithm, int flags,
+                         unsigned char* key, int keyLength,
+                         unsigned char* iv, int ivLength,
+                         unsigned char* aad, int aadLength,
+                         unsigned char* tag, int tagLength,
+                         unsigned char* inputData, int inputDataLength,
+                         unsigned char* outputData, int* outputDataLength) {
 #ifdef USE_MBEDTLS
     mbedtls_cipher_mode_t cipherMode;
     size_t outLength;
@@ -291,12 +320,12 @@ bool PltDecryptMessage(PPLT_CRYPTO_CONTEXT ctx, int algorithm, int flags,
         memmove(encryptedData, encryptedData + tagLength, inputDataLength);
         // Copy back tag to the end
         memcpy(encryptedData + inputDataLength, tagTemp, tagLength);
-        if (mbedtls_cipher_auth_decrypt_ext(&ctx->ctx, iv, ivLength, NULL, 0, encryptedData, encryptedDataLen,
+        if (mbedtls_cipher_auth_decrypt_ext(&ctx->ctx, iv, ivLength, aad, aadLength, encryptedData, encryptedDataLen,
                                             outputData, inputDataLength, &outLength, tagLength) != 0) {
             return false;
         }
 #else
-        if (mbedtls_cipher_auth_decrypt(&ctx->ctx, iv, ivLength, NULL, 0, inputData, inputDataLength, outputData, &outLength, tag, tagLength) != 0) {
+        if (mbedtls_cipher_auth_decrypt(&ctx->ctx, iv, ivLength, aad, aadLength, inputData, inputDataLength, outputData, &outLength, tag, tagLength) != 0) {
             return false;
         }
 #endif
@@ -384,6 +413,15 @@ bool PltDecryptMessage(PPLT_CRYPTO_CONTEXT ctx, int algorithm, int flags,
         return false;
     }
 
+    if (aadLength > 0) {
+        int aadOutputLength;
+
+        LC_ASSERT(algorithm == ALGORITHM_AES_GCM);
+        if (EVP_DecryptUpdate(ctx->ctx, NULL, &aadOutputLength, aad, aadLength) != 1) {
+            return false;
+        }
+    }
+
     if (EVP_DecryptUpdate(ctx->ctx, outputData, outputDataLength, inputData, inputDataLength) != 1) {
         return false;
     }
@@ -417,6 +455,21 @@ bool PltDecryptMessage(PPLT_CRYPTO_CONTEXT ctx, int algorithm, int flags,
 #endif
 }
 
+bool PltDecryptMessage(PPLT_CRYPTO_CONTEXT ctx, int algorithm, int flags,
+                       unsigned char* key, int keyLength,
+                       unsigned char* iv, int ivLength,
+                       unsigned char* tag, int tagLength,
+                       unsigned char* inputData, int inputDataLength,
+                       unsigned char* outputData, int* outputDataLength) {
+    return PltDecryptMessageEx(ctx, algorithm, flags,
+                               key, keyLength,
+                               iv, ivLength,
+                               NULL, 0,
+                               tag, tagLength,
+                               inputData, inputDataLength,
+                               outputData, outputDataLength);
+}
+
 PPLT_CRYPTO_CONTEXT PltCreateCryptoContext(void) {
     PPLT_CRYPTO_CONTEXT ctx = malloc(sizeof(*ctx));
     if (!ctx) {
@@ -445,6 +498,137 @@ void PltDestroyCryptoContext(PPLT_CRYPTO_CONTEXT ctx) {
     EVP_CIPHER_CTX_free(ctx->ctx);
 #endif
     free(ctx);
+}
+
+static bool hmacSha256(const unsigned char* key, int keyLength,
+                       const unsigned char* input, int inputLength,
+                       unsigned char output[32]) {
+#ifdef USE_MBEDTLS
+    const mbedtls_md_info_t* mdInfo = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+
+    return mdInfo != NULL &&
+           mbedtls_md_hmac(mdInfo, key, keyLength, input, inputLength, output) == 0;
+#else
+    unsigned int outputLength = 0;
+
+    return HMAC(EVP_sha256(), key, keyLength, input, inputLength, output, &outputLength) != NULL &&
+           outputLength == 32;
+#endif
+}
+
+bool PltHkdfSha256(const unsigned char* inputKeyMaterial, int inputKeyMaterialLength,
+                   const unsigned char* salt, int saltLength,
+                   const unsigned char* info, int infoLength,
+                   unsigned char* outputKeyMaterial, int outputKeyMaterialLength) {
+    unsigned char zeroSalt[32] = { 0 };
+    unsigned char prk[32];
+    unsigned char previousBlock[32];
+    int previousBlockLength = 0;
+    int outputOffset = 0;
+    unsigned int blockIndex = 1;
+    bool success = false;
+
+    if (inputKeyMaterial == NULL || inputKeyMaterialLength <= 0 ||
+        outputKeyMaterial == NULL || outputKeyMaterialLength <= 0 ||
+        outputKeyMaterialLength > 255 * 32 ||
+        infoLength < 0 || (infoLength > 0 && info == NULL) ||
+        saltLength < 0 || (saltLength > 0 && salt == NULL)) {
+        return false;
+    }
+
+    if (saltLength == 0) {
+        salt = zeroSalt;
+        saltLength = sizeof(zeroSalt);
+    }
+
+    if (!hmacSha256(salt, saltLength, inputKeyMaterial, inputKeyMaterialLength, prk)) {
+        goto Exit;
+    }
+
+    while (outputOffset < outputKeyMaterialLength) {
+        int hmacInputLength = previousBlockLength + infoLength + 1;
+        unsigned char* hmacInput = malloc(hmacInputLength);
+        int bytesToCopy;
+
+        if (hmacInput == NULL) {
+            goto Exit;
+        }
+
+        if (previousBlockLength != 0) {
+            memcpy(hmacInput, previousBlock, previousBlockLength);
+        }
+        if (infoLength != 0) {
+            memcpy(hmacInput + previousBlockLength, info, infoLength);
+        }
+        hmacInput[hmacInputLength - 1] = (unsigned char)blockIndex;
+
+        if (!hmacSha256(prk, sizeof(prk), hmacInput, hmacInputLength, previousBlock)) {
+            memset(hmacInput, 0, hmacInputLength);
+            free(hmacInput);
+            goto Exit;
+        }
+
+        memset(hmacInput, 0, hmacInputLength);
+        free(hmacInput);
+
+        previousBlockLength = sizeof(previousBlock);
+        bytesToCopy = outputKeyMaterialLength - outputOffset;
+        if (bytesToCopy > (int)sizeof(previousBlock)) {
+            bytesToCopy = sizeof(previousBlock);
+        }
+        memcpy(outputKeyMaterial + outputOffset, previousBlock, bytesToCopy);
+        outputOffset += bytesToCopy;
+        blockIndex++;
+    }
+
+    success = true;
+
+Exit:
+    memset(prk, 0, sizeof(prk));
+    memset(previousBlock, 0, sizeof(previousBlock));
+    return success;
+}
+
+bool PltAesEcbEncryptBlock(const unsigned char* key, int keyLength,
+                           const unsigned char input[16], unsigned char output[16]) {
+    if (key == NULL || keyLength != 16 || input == NULL || output == NULL) {
+        return false;
+    }
+
+#ifdef USE_MBEDTLS
+    mbedtls_aes_context aes;
+    int result;
+
+    mbedtls_aes_init(&aes);
+    result = mbedtls_aes_setkey_enc(&aes, key, keyLength * 8);
+    if (result == 0) {
+        result = mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_ENCRYPT, input, output);
+    }
+    mbedtls_aes_free(&aes);
+    return result == 0;
+#else
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    int updateLength = 0;
+    int finalLength = 0;
+    bool success = false;
+
+    if (ctx == NULL) {
+        return false;
+    }
+
+    if (EVP_EncryptInit_ex(ctx, EVP_aes_128_ecb(), NULL, key, NULL) != 1 ||
+        EVP_CIPHER_CTX_set_padding(ctx, 0) != 1 ||
+        EVP_EncryptUpdate(ctx, output, &updateLength, input, 16) != 1 ||
+        EVP_EncryptFinal_ex(ctx, output + updateLength, &finalLength) != 1) {
+        goto Exit;
+    }
+
+    success = updateLength + finalLength == 16;
+
+Exit:
+    EVP_CIPHER_CTX_free(ctx);
+    return success;
+#endif
 }
 
 void PltGenerateRandomData(unsigned char* data, int length) {

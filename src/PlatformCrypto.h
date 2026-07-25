@@ -38,11 +38,35 @@ bool PltEncryptMessage(PPLT_CRYPTO_CONTEXT ctx, int algorithm, int flags,
                        unsigned char* inputData, int inputDataLength,
                        unsigned char* outputData, int* outputDataLength);
 
+bool PltEncryptMessageEx(PPLT_CRYPTO_CONTEXT ctx, int algorithm, int flags,
+                         unsigned char* key, int keyLength,
+                         unsigned char* iv, int ivLength,
+                         unsigned char* aad, int aadLength,
+                         unsigned char* tag, int tagLength,
+                         unsigned char* inputData, int inputDataLength,
+                         unsigned char* outputData, int* outputDataLength);
+
 bool PltDecryptMessage(PPLT_CRYPTO_CONTEXT ctx, int algorithm, int flags,
                        unsigned char* key, int keyLength,
                        unsigned char* iv, int ivLength,
                        unsigned char* tag, int tagLength,
                        unsigned char* inputData, int inputDataLength,
                        unsigned char* outputData, int* outputDataLength);
+
+bool PltDecryptMessageEx(PPLT_CRYPTO_CONTEXT ctx, int algorithm, int flags,
+                         unsigned char* key, int keyLength,
+                         unsigned char* iv, int ivLength,
+                         unsigned char* aad, int aadLength,
+                         unsigned char* tag, int tagLength,
+                         unsigned char* inputData, int inputDataLength,
+                         unsigned char* outputData, int* outputDataLength);
+
+bool PltHkdfSha256(const unsigned char* inputKeyMaterial, int inputKeyMaterialLength,
+                   const unsigned char* salt, int saltLength,
+                   const unsigned char* info, int infoLength,
+                   unsigned char* outputKeyMaterial, int outputKeyMaterialLength);
+
+bool PltAesEcbEncryptBlock(const unsigned char* key, int keyLength,
+                           const unsigned char input[16], unsigned char output[16]);
 
 void PltGenerateRandomData(unsigned char* data, int length);

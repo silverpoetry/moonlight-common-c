@@ -8,6 +8,8 @@ static RTP_AUDIO_QUEUE rtpAudioQueue;
 static PLT_THREAD udpPingThread;
 static PLT_THREAD receiveThread;
 static PLT_THREAD decoderThread;
+static PLT_MUTEX audioSendMutex;
+static bool audioSendMutexInitialized;
 
 static PPLT_CRYPTO_CONTEXT audioDecryptionCtx;
 static uint32_t avRiKeyId;
@@ -37,12 +39,8 @@ typedef struct _QUEUED_AUDIO_PACKET {
 
 static void AudioPingThreadProc(void* context) {
     char legacyPingData[] = { 0x50, 0x49, 0x4E, 0x47 };
-    LC_SOCKADDR saddr;
 
     LC_ASSERT(AudioPortNumber != 0);
-
-    memcpy(&saddr, &RemoteAddr, sizeof(saddr));
-    SET_PORT(&saddr, AudioPortNumber);
 
     // We do not check for errors here. Socket errors will be handled
     // on the read-side in ReceiveThreadProc(). This avoids potential
@@ -54,10 +52,10 @@ static void AudioPingThreadProc(void* context) {
             pingCount++;
             AudioPingPayload.sequenceNumber = BE32(pingCount);
 
-            sendto(rtpSocket, (char*)&AudioPingPayload, sizeof(AudioPingPayload), 0, (struct sockaddr*)&saddr, AddrLen);
+            sendAudioUdpPacket(&AudioPingPayload, sizeof(AudioPingPayload));
         }
         else {
-            sendto(rtpSocket, legacyPingData, sizeof(legacyPingData), 0, (struct sockaddr*)&saddr, AddrLen);
+            sendAudioUdpPacket(legacyPingData, sizeof(legacyPingData));
         }
 
         PltSleepMsInterruptible(&udpPingThread, 500);
@@ -66,6 +64,8 @@ static void AudioPingThreadProc(void* context) {
 
 // Initialize the audio stream and start
 int initializeAudioStream(void) {
+    int err;
+
     LbqInitializeLinkedBlockingQueue(&packetQueue, 30);
     RtpaInitializeQueue(&rtpAudioQueue);
     lastSeq = 0;
@@ -73,6 +73,19 @@ int initializeAudioStream(void) {
     pingThreadStarted = false;
     firstReceiveTime = 0;
     audioDecryptionCtx = PltCreateCryptoContext();
+    audioSendMutexInitialized = false;
+    err = PltCreateMutex(&audioSendMutex);
+    if (err != 0) {
+        return err;
+    }
+    audioSendMutexInitialized = true;
+
+    err = initializeMicrophoneStream();
+    if (err != 0) {
+        PltDeleteMutex(&audioSendMutex);
+        audioSendMutexInitialized = false;
+        return err;
+    }
 #ifdef LC_DEBUG
     opusHeaderByte = INVALID_OPUS_HEADER;
 #endif
@@ -124,6 +137,8 @@ static void freePacketList(PLINKED_BLOCKING_QUEUE_ENTRY entry) {
 
 // Tear down the audio stream once we're done with it
 void destroyAudioStream(void) {
+    destroyMicrophoneStream();
+
     if (rtpSocket != INVALID_SOCKET) {
         if (pingThreadStarted) {
             PltInterruptThread(&udpPingThread);
@@ -135,8 +150,31 @@ void destroyAudioStream(void) {
     }
 
     PltDestroyCryptoContext(audioDecryptionCtx);
+    if (audioSendMutexInitialized) {
+        PltDeleteMutex(&audioSendMutex);
+        audioSendMutexInitialized = false;
+    }
     freePacketList(LbqDestroyLinkedBlockingQueue(&packetQueue));
     RtpaCleanupQueue(&rtpAudioQueue);
+}
+
+int sendAudioUdpPacket(const void* data, int length) {
+    LC_SOCKADDR saddr;
+    int result;
+
+    if (rtpSocket == INVALID_SOCKET || data == NULL || length <= 0) {
+        return -1;
+    }
+
+    memcpy(&saddr, &RemoteAddr, sizeof(saddr));
+    SET_PORT(&saddr, AudioPortNumber);
+
+    PltLockMutex(&audioSendMutex);
+    result = sendto(rtpSocket, (const char*)data, length, 0,
+                    (struct sockaddr*)&saddr, AddrLen);
+    PltUnlockMutex(&audioSendMutex);
+
+    return result == length ? 0 : LastSocketFail();
 }
 
 static bool queuePacketToLbq(PQUEUED_AUDIO_PACKET* packet) {
@@ -287,6 +325,11 @@ static void AudioReceiveThreadProc(void* context) {
             continue;
         }
 
+        if (isMicrophoneRtcpPacket((const uint8_t*)packet->data, packet->header.size)) {
+            processMicrophoneRtcpPacket((const uint8_t*)packet->data, packet->header.size);
+            continue;
+        }
+
         if (packet->header.size < (int)sizeof(RTP_PACKET)) {
             // Runt packet
             continue;
@@ -400,6 +443,8 @@ static void AudioDecoderThreadProc(void* context) {
 }
 
 void stopAudioStream(void) {
+    stopMicrophoneStream();
+
     if (!receivedDataFromPeer) {
         Limelog("No audio traffic was ever received from the host!\n");
     }

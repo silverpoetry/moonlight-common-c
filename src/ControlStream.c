@@ -7,19 +7,15 @@
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
 #endif
 
-#define CLIPBOARD_VERSION 1
-#define CLIPBOARD_OP_HELLO 0x01
-#define CLIPBOARD_OP_SET 0x02
-#define CLIPBOARD_OP_REQUEST 0x03
-#define CLIPBOARD_OP_ACK 0x04
-#define CLIPBOARD_OP_NACK 0x05
-#define CLIPBOARD_MIME_TEXT_UTF8 0x01
-#define CLIPBOARD_FLAG_CAN_SEND 0x01
-#define CLIPBOARD_FLAG_CAN_RECEIVE 0x02
-#define CLIPBOARD_MAX_TEXT_BYTES (1024 * 1024)
-#define CLIPBOARD_MAX_SEND_CHUNK_BYTES (30 * 1024)
-#define CLIPBOARD_MAX_RECV_CHUNK_BYTES (60 * 1024)
-#define CLIPBOARD_PTYPE 0x3001
+#define CLIPBOARD_V1_OP_HELLO 0x01
+#define CLIPBOARD_V1_OP_SET 0x02
+#define CLIPBOARD_V1_OP_REQUEST 0x03
+#define CLIPBOARD_V1_OP_ACK 0x04
+#define CLIPBOARD_V1_OP_NACK 0x05
+#define CLIPBOARD_V1_FLAG_CAN_SEND 0x01
+#define CLIPBOARD_V1_FLAG_CAN_RECEIVE 0x02
+#define CLIPBOARD_V1_MAX_SEND_CHUNK_BYTES (30U * 1024U)
+#define CLIPBOARD_V1_MAX_RECV_CHUNK_BYTES (60U * 1024U)
 
 // NV control stream packet header for TCP
 typedef struct _NVCTL_TCP_PACKET_HEADER {
@@ -244,7 +240,7 @@ static const short packetTypesGen7Enc[] = {
     0x5502, // Set RGB LED (Sunshine protocol extension)
     0x5503, // Set Adaptive Triggers (Sunshine protocol extension)
     0x5504, // Native cursor (Sunshine protocol extension)
-    CLIPBOARD_PTYPE, // Clipboard sync (Sunshine protocol extension)
+    LI_CLIPBOARD_PTYPE, // Clipboard sync (Sunshine protocol extension)
 };
 
 static const char requestIdrFrameGen3[] = { 0, 0 };
@@ -327,11 +323,28 @@ static bool supportsIdrFrameRequest;
 static bool clipboardNegotiated;
 static bool clipboardHostCanSend;
 static bool clipboardHostCanReceive;
+static bool clipboardV1FallbackAttempted;
+static uint8_t clipboardProtocolVersion;
+static uint8_t clipboardLocalCapabilities;
+static uint8_t clipboardHostCapabilities;
 static uint32_t clipboardNextSequence;
+static uint64_t clipboardOriginId;
+static uint64_t clipboardNextItemId;
+static uint64_t clipboardLocalItemId;
+static uint8_t clipboardLocalMimeType;
+static uint8_t* clipboardLocalData;
+static uint32_t clipboardLocalDataLength;
+static uint64_t clipboardRequestedOriginId;
+static uint64_t clipboardRequestedItemId;
+static uint8_t clipboardRequestedMimeType;
 static uint32_t clipboardRecvSequence;
+static uint64_t clipboardRecvOriginId;
+static uint64_t clipboardRecvItemId;
+static uint8_t clipboardRecvMimeType;
 static uint32_t clipboardRecvTotalLength;
 static uint32_t clipboardRecvOffset;
 static uint8_t* clipboardRecvBuffer;
+static PLT_MUTEX clipboardMutex;
 
 #define LOSS_REPORT_INTERVAL_MS 50
 #define PERIODIC_PING_INTERVAL_MS 100
@@ -344,6 +357,7 @@ int initializeControlStream(void) {
     LbqInitializeLinkedBlockingQueue(&frameFecStatusQueue, 8); // Limits number of frame status reports per periodic ping interval
     LbqInitializeLinkedBlockingQueue(&asyncCallbackQueue, 30);
     PltCreateMutex(&enetMutex);
+    PltCreateMutex(&clipboardMutex);
 
     encryptedControlStream = APP_VERSION_AT_LEAST(7, 1, 431);
 
@@ -398,8 +412,27 @@ int initializeControlStream(void) {
     clipboardNegotiated = false;
     clipboardHostCanSend = false;
     clipboardHostCanReceive = false;
+    clipboardV1FallbackAttempted = false;
+    clipboardProtocolVersion = 0;
+    clipboardLocalCapabilities = 0;
+    clipboardHostCapabilities = 0;
     clipboardNextSequence = 1;
+    PltGenerateRandomData((uint8_t*)&clipboardOriginId, sizeof(clipboardOriginId));
+    if (clipboardOriginId == 0) {
+        clipboardOriginId = 1;
+    }
+    clipboardNextItemId = 1;
+    clipboardLocalItemId = 0;
+    clipboardLocalMimeType = LI_CLIPBOARD_MIME_NONE;
+    clipboardLocalData = NULL;
+    clipboardLocalDataLength = 0;
+    clipboardRequestedOriginId = 0;
+    clipboardRequestedItemId = 0;
+    clipboardRequestedMimeType = LI_CLIPBOARD_MIME_NONE;
     clipboardRecvSequence = 0;
+    clipboardRecvOriginId = 0;
+    clipboardRecvItemId = 0;
+    clipboardRecvMimeType = LI_CLIPBOARD_MIME_NONE;
     clipboardRecvTotalLength = 0;
     clipboardRecvOffset = 0;
     clipboardRecvBuffer = NULL;
@@ -424,12 +457,15 @@ void destroyControlStream(void) {
     PltDestroyCryptoContext(decryptionCtx);
     free(clipboardRecvBuffer);
     clipboardRecvBuffer = NULL;
+    free(clipboardLocalData);
+    clipboardLocalData = NULL;
     PltCloseEvent(&idrFrameRequiredEvent);
     freeBasicLbqList(LbqDestroyLinkedBlockingQueue(&referenceFrameControlQueue));
     freeBasicLbqList(LbqDestroyLinkedBlockingQueue(&frameFecStatusQueue));
     freeBasicLbqList(LbqDestroyLinkedBlockingQueue(&asyncCallbackQueue));
 
     PltDeleteMutex(&enetMutex);
+    PltDeleteMutex(&clipboardMutex);
 }
 
 static void queueFrameInvalidationTuple(uint32_t startFrame, uint32_t endFrame) {
@@ -977,34 +1013,70 @@ static void freeQueuedAsyncCallback(PQUEUED_ASYNC_CALLBACK queuedCb) {
 
 static void resetClipboardReassembly(void) {
     clipboardRecvSequence = 0;
+    clipboardRecvOriginId = 0;
+    clipboardRecvItemId = 0;
+    clipboardRecvMimeType = LI_CLIPBOARD_MIME_NONE;
     clipboardRecvTotalLength = 0;
     clipboardRecvOffset = 0;
     free(clipboardRecvBuffer);
     clipboardRecvBuffer = NULL;
 }
 
-static bool sendClipboardMessage(uint8_t op, uint8_t flags, uint32_t sequence, const uint8_t* text, uint32_t length) {
+static uint8_t getClipboardLocalCapabilities(void) {
+    uint8_t capabilities = StreamConfig.clipboardCapabilities &
+                           (LI_CLIPBOARD_CAP_CAN_SEND |
+                            LI_CLIPBOARD_CAP_CAN_RECEIVE |
+                            LI_CLIPBOARD_CAP_TEXT |
+                            LI_CLIPBOARD_CAP_PNG |
+                            LI_CLIPBOARD_CAP_BLOB);
+
+    if ((capabilities & (LI_CLIPBOARD_CAP_TEXT | LI_CLIPBOARD_CAP_PNG)) == 0) {
+        capabilities |= LI_CLIPBOARD_CAP_TEXT;
+    }
+    if ((capabilities & (LI_CLIPBOARD_CAP_CAN_SEND | LI_CLIPBOARD_CAP_CAN_RECEIVE)) == 0) {
+        capabilities |= LI_CLIPBOARD_CAP_CAN_SEND | LI_CLIPBOARD_CAP_CAN_RECEIVE;
+    }
+    if ((capabilities & LI_CLIPBOARD_CAP_PNG) == 0) {
+        capabilities &= ~LI_CLIPBOARD_CAP_BLOB;
+    }
+
+    return capabilities;
+}
+
+static uint32_t getNextClipboardSequence(void) {
+    uint32_t sequence;
+
+    PltLockMutex(&clipboardMutex);
+    sequence = clipboardNextSequence++;
+    if (clipboardNextSequence == 0) {
+        clipboardNextSequence = 1;
+    }
+    PltUnlockMutex(&clipboardMutex);
+    return sequence;
+}
+
+static bool sendClipboardV1Message(uint8_t op, uint8_t flags, uint32_t sequence, const uint8_t* text, uint32_t length) {
     if (!IS_SUNSHINE() || !StreamConfig.enableClipboardSync || !encryptedControlStream) {
         return false;
     }
 
-    if (length > CLIPBOARD_MAX_TEXT_BYTES) {
+    if (length > LI_CLIPBOARD_MAX_TEXT_BYTES) {
         return false;
     }
 
-    for (uint32_t offset = 0; offset <= length; offset += CLIPBOARD_MAX_SEND_CHUNK_BYTES) {
+    for (uint32_t offset = 0; offset <= length; offset += CLIPBOARD_V1_MAX_SEND_CHUNK_BYTES) {
         uint32_t remaining = length - offset;
-        uint32_t chunkLength = length == 0 ? 0 : (remaining > CLIPBOARD_MAX_SEND_CHUNK_BYTES ? CLIPBOARD_MAX_SEND_CHUNK_BYTES : remaining);
-        char* payload = malloc(20 + chunkLength);
+        uint32_t chunkLength = length == 0 ? 0 : MIN(remaining, CLIPBOARD_V1_MAX_SEND_CHUNK_BYTES);
+        char* payload = malloc(LI_CLIPBOARD_V1_HEADER_SIZE + chunkLength);
         if (payload == NULL) {
             return false;
         }
 
         BYTE_BUFFER bb;
-        BbInitializeWrappedBuffer(&bb, payload, 0, 20 + chunkLength, BYTE_ORDER_LITTLE);
-        BbPut8(&bb, CLIPBOARD_VERSION);
+        BbInitializeWrappedBuffer(&bb, payload, 0, LI_CLIPBOARD_V1_HEADER_SIZE + chunkLength, BYTE_ORDER_LITTLE);
+        BbPut8(&bb, LI_CLIPBOARD_VERSION_V1);
         BbPut8(&bb, op);
-        BbPut8(&bb, CLIPBOARD_MIME_TEXT_UTF8);
+        BbPut8(&bb, LI_CLIPBOARD_MIME_TEXT_UTF8);
         BbPut8(&bb, flags);
         BbPut32(&bb, sequence);
         BbPut32(&bb, length);
@@ -1012,11 +1084,11 @@ static bool sendClipboardMessage(uint8_t op, uint8_t flags, uint32_t sequence, c
         BbPut32(&bb, chunkLength);
 
         if (chunkLength != 0) {
-            memcpy(payload + 20, text + offset, chunkLength);
+            memcpy(payload + LI_CLIPBOARD_V1_HEADER_SIZE, text + offset, chunkLength);
         }
 
         bool sent = sendMessageAndForget(packetTypes[IDX_CLIPBOARD],
-                                         20 + chunkLength,
+                                         LI_CLIPBOARD_V1_HEADER_SIZE + chunkLength,
                                          payload,
                                          CTRL_CHANNEL_GENERIC,
                                          ENET_PACKET_FLAG_RELIABLE,
@@ -1034,27 +1106,287 @@ static bool sendClipboardMessage(uint8_t op, uint8_t flags, uint32_t sequence, c
     return true;
 }
 
-static bool sendClipboardHello(void) {
-    return sendClipboardMessage(CLIPBOARD_OP_HELLO,
-                                CLIPBOARD_FLAG_CAN_SEND | CLIPBOARD_FLAG_CAN_RECEIVE,
-                                clipboardNextSequence++,
-                                NULL,
-                                0);
+static bool sendClipboardV2Message(uint8_t op,
+                                   uint8_t mimeType,
+                                   uint8_t flags,
+                                   uint32_t sequence,
+                                   uint64_t originId,
+                                   uint64_t itemId,
+                                   uint32_t totalLength,
+                                   uint32_t chunkOffset,
+                                   const uint8_t* data,
+                                   uint32_t dataLength,
+                                   bool moreData) {
+    uint8_t* payload;
+    LI_CLIPBOARD_V2_HEADER header = {
+        .version = LI_CLIPBOARD_VERSION_V2,
+        .op = op,
+        .mimeType = mimeType,
+        .flags = flags,
+        .sequence = sequence,
+        .originId = originId,
+        .itemId = itemId,
+        .totalLength = totalLength,
+        .chunkOffset = chunkOffset,
+        .chunkLength = dataLength,
+    };
+
+    if (!IS_SUNSHINE() || !StreamConfig.enableClipboardSync || !encryptedControlStream ||
+            dataLength > LI_CLIPBOARD_MAX_CHUNK_BYTES ||
+            (dataLength != 0 && data == NULL)) {
+        return false;
+    }
+
+    payload = malloc(LI_CLIPBOARD_V2_HEADER_SIZE + dataLength);
+    if (payload == NULL) {
+        return false;
+    }
+
+    if (!LiEncodeClipboardV2Header(payload, LI_CLIPBOARD_V2_HEADER_SIZE, &header)) {
+        free(payload);
+        return false;
+    }
+    if (dataLength != 0) {
+        memcpy(payload + LI_CLIPBOARD_V2_HEADER_SIZE, data, dataLength);
+    }
+
+    bool sent = sendMessageAndForget(packetTypes[IDX_CLIPBOARD],
+                                     LI_CLIPBOARD_V2_HEADER_SIZE + dataLength,
+                                     payload,
+                                     CTRL_CHANNEL_GENERIC,
+                                     ENET_PACKET_FLAG_RELIABLE,
+                                     moreData);
+    free(payload);
+    return sent;
 }
 
-int LiSendClipboardText(const uint8_t* text, uint32_t length) {
-    if (!clipboardNegotiated || !clipboardHostCanReceive || text == NULL || length > CLIPBOARD_MAX_TEXT_BYTES) {
+static bool sendClipboardV2Data(uint32_t sequence,
+                                uint8_t mimeType,
+                                uint64_t originId,
+                                uint64_t itemId,
+                                const uint8_t* data,
+                                uint32_t length) {
+    for (uint32_t offset = 0; offset <= length; offset += LI_CLIPBOARD_MAX_CHUNK_BYTES) {
+        uint32_t remaining = length - offset;
+        uint32_t chunkLength = length == 0 ? 0 : MIN(remaining, LI_CLIPBOARD_MAX_CHUNK_BYTES);
+        if (!sendClipboardV2Message(LI_CLIPBOARD_OP_DATA,
+                                    mimeType,
+                                    0,
+                                    sequence,
+                                    originId,
+                                    itemId,
+                                    length,
+                                    offset,
+                                    data == NULL ? NULL : data + offset,
+                                    chunkLength,
+                                    length != 0 && chunkLength != remaining)) {
+            return false;
+        }
+
+        if (length == 0 || chunkLength == remaining) {
+            break;
+        }
+    }
+
+    return true;
+}
+
+static bool sendClipboardV2Control(uint8_t op,
+                                   uint8_t mimeType,
+                                   uint8_t flags,
+                                   uint32_t sequence,
+                                   uint64_t originId,
+                                   uint64_t itemId,
+                                   uint32_t totalLength) {
+    return sendClipboardV2Message(op,
+                                  mimeType,
+                                  flags,
+                                  sequence,
+                                  originId,
+                                  itemId,
+                                  totalLength,
+                                  0,
+                                  NULL,
+                                  0,
+                                  false);
+}
+
+static bool sendClipboardV1Hello(void) {
+    uint8_t flags = 0;
+    if (clipboardLocalCapabilities & LI_CLIPBOARD_CAP_CAN_SEND) {
+        flags |= CLIPBOARD_V1_FLAG_CAN_SEND;
+    }
+    if (clipboardLocalCapabilities & LI_CLIPBOARD_CAP_CAN_RECEIVE) {
+        flags |= CLIPBOARD_V1_FLAG_CAN_RECEIVE;
+    }
+
+    return sendClipboardV1Message(CLIPBOARD_V1_OP_HELLO,
+                                  flags,
+                                  getNextClipboardSequence(),
+                                  NULL,
+                                  0);
+}
+
+static bool sendClipboardV2Hello(void) {
+    return sendClipboardV2Control(LI_CLIPBOARD_OP_HELLO,
+                                  LI_CLIPBOARD_MIME_NONE,
+                                  clipboardLocalCapabilities,
+                                  getNextClipboardSequence(),
+                                  clipboardOriginId,
+                                  0,
+                                  0);
+}
+
+static void sendClipboardV2Nack(const LI_CLIPBOARD_V2_HEADER* header) {
+    sendClipboardV2Control(LI_CLIPBOARD_OP_NACK,
+                           header->mimeType,
+                           0,
+                           header->sequence,
+                           header->originId,
+                           header->itemId,
+                           0);
+}
+
+int LiSendClipboardContent(uint8_t mimeType, const uint8_t* data, uint32_t length) {
+    uint8_t* copy;
+    uint32_t sequence;
+    uint64_t itemId;
+    uint32_t sizeLimit = LiGetClipboardMimeSizeLimit(mimeType);
+
+    if (!clipboardNegotiated || clipboardProtocolVersion != LI_CLIPBOARD_VERSION_V2 ||
+            sizeLimit == 0 || length > sizeLimit ||
+            (length != 0 && data == NULL) ||
+            (clipboardLocalCapabilities & LI_CLIPBOARD_CAP_CAN_SEND) == 0 ||
+            (clipboardHostCapabilities & LI_CLIPBOARD_CAP_CAN_RECEIVE) == 0 ||
+            !LiIsClipboardMimeSupported(mimeType, clipboardLocalCapabilities) ||
+            !LiIsClipboardMimeSupported(mimeType, clipboardHostCapabilities)) {
+        return -1;
+    }
+    if (mimeType == LI_CLIPBOARD_MIME_TEXT_UTF8 && !LiIsValidUtf8ClipboardText(data, length)) {
+        return -1;
+    }
+    if (mimeType == LI_CLIPBOARD_MIME_PNG && !LiIsValidClipboardPngHeader(data, length)) {
+        return -1;
+    }
+    if (mimeType == LI_CLIPBOARD_MIME_BLOB_REFERENCE) {
+        LI_CLIPBOARD_BLOB_REFERENCE reference;
+        if (!LiDecodeClipboardBlobReference(data, length, &reference)) {
+            return -1;
+        }
+    }
+
+    copy = malloc(length == 0 ? 1 : length);
+    if (copy == NULL) {
+        return -1;
+    }
+    if (length != 0) {
+        memcpy(copy, data, length);
+    }
+
+    PltLockMutex(&clipboardMutex);
+    free(clipboardLocalData);
+    clipboardLocalData = copy;
+    clipboardLocalDataLength = length;
+    clipboardLocalMimeType = mimeType;
+    itemId = clipboardNextItemId++;
+    if (clipboardNextItemId == 0) {
+        clipboardNextItemId = 1;
+    }
+    clipboardLocalItemId = itemId;
+    sequence = clipboardNextSequence++;
+    if (clipboardNextSequence == 0) {
+        clipboardNextSequence = 1;
+    }
+    PltUnlockMutex(&clipboardMutex);
+
+    return sendClipboardV2Control(LI_CLIPBOARD_OP_ANNOUNCE,
+                                  mimeType,
+                                  0,
+                                  sequence,
+                                  clipboardOriginId,
+                                  itemId,
+                                  length) ? 0 : -1;
+}
+
+int LiSendClipboardBlobReference(uint8_t targetMimeType,
+                                 const char* id,
+                                 uint32_t size,
+                                 const uint8_t sha256[LI_CLIPBOARD_SHA256_BYTES]) {
+    LI_CLIPBOARD_BLOB_REFERENCE reference;
+    uint8_t encoded[LI_CLIPBOARD_MAX_BLOB_REFERENCE_BYTES];
+    size_t encodedLength;
+    size_t idLength;
+
+    if (id == NULL || sha256 == NULL) {
+        return -1;
+    }
+    idLength = strlen(id);
+    if (idLength == 0 || idLength > LI_CLIPBOARD_BLOB_ID_MAX_BYTES) {
         return -1;
     }
 
-    return sendClipboardMessage(CLIPBOARD_OP_SET,
-                                CLIPBOARD_FLAG_CAN_SEND | CLIPBOARD_FLAG_CAN_RECEIVE,
-                                clipboardNextSequence++,
-                                text,
-                                length) ? 0 : -1;
+    memset(&reference, 0, sizeof(reference));
+    reference.targetMimeType = targetMimeType;
+    reference.size = size;
+    reference.idLength = (uint8_t)idLength;
+    memcpy(reference.id, id, idLength);
+    memcpy(reference.sha256, sha256, LI_CLIPBOARD_SHA256_BYTES);
+    if (!LiEncodeClipboardBlobReference(encoded, sizeof(encoded), &reference, &encodedLength)) {
+        return -1;
+    }
+
+    return LiSendClipboardContent(LI_CLIPBOARD_MIME_BLOB_REFERENCE,
+                                  encoded,
+                                  (uint32_t)encodedLength);
 }
 
-static void handleClipboardMessage(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLength) {
+int LiReleaseClipboardContent(void) {
+    uint64_t itemId;
+
+    if (!clipboardNegotiated || clipboardProtocolVersion != LI_CLIPBOARD_VERSION_V2) {
+        return -1;
+    }
+
+    PltLockMutex(&clipboardMutex);
+    itemId = clipboardLocalItemId;
+    clipboardLocalItemId = 0;
+    clipboardLocalMimeType = LI_CLIPBOARD_MIME_NONE;
+    clipboardLocalDataLength = 0;
+    free(clipboardLocalData);
+    clipboardLocalData = NULL;
+    PltUnlockMutex(&clipboardMutex);
+
+    return sendClipboardV2Control(LI_CLIPBOARD_OP_RELEASE,
+                                  LI_CLIPBOARD_MIME_NONE,
+                                  0,
+                                  getNextClipboardSequence(),
+                                  clipboardOriginId,
+                                  itemId,
+                                  0) ? 0 : -1;
+}
+
+int LiSendClipboardText(const uint8_t* text, uint32_t length) {
+    if (!clipboardNegotiated || text == NULL || length > LI_CLIPBOARD_MAX_TEXT_BYTES ||
+            !LiIsValidUtf8ClipboardText(text, length)) {
+        return -1;
+    }
+
+    if (clipboardProtocolVersion == LI_CLIPBOARD_VERSION_V2) {
+        return LiSendClipboardContent(LI_CLIPBOARD_MIME_TEXT_UTF8, text, length);
+    }
+
+    if (clipboardProtocolVersion != LI_CLIPBOARD_VERSION_V1 || !clipboardHostCanReceive) {
+        return -1;
+    }
+
+    return sendClipboardV1Message(CLIPBOARD_V1_OP_SET,
+                                  CLIPBOARD_V1_FLAG_CAN_SEND | CLIPBOARD_V1_FLAG_CAN_RECEIVE,
+                                  getNextClipboardSequence(),
+                                  text,
+                                  length) ? 0 : -1;
+}
+
+static void handleClipboardV1Message(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLength) {
     BYTE_BUFFER bb;
     uint8_t version;
     uint8_t op;
@@ -1065,7 +1397,7 @@ static void handleClipboardMessage(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int pack
     uint32_t chunkOffset;
     uint32_t chunkLength;
 
-    if (!StreamConfig.enableClipboardSync || packetLength < (int)(sizeof(*ctlHdr) + 20)) {
+    if (!StreamConfig.enableClipboardSync || packetLength < (int)(sizeof(*ctlHdr) + LI_CLIPBOARD_V1_HEADER_SIZE)) {
         return;
     }
 
@@ -1081,31 +1413,36 @@ static void handleClipboardMessage(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int pack
         return;
     }
 
-    if (version != CLIPBOARD_VERSION ||
-            mimeType != CLIPBOARD_MIME_TEXT_UTF8 ||
-            totalLength > CLIPBOARD_MAX_TEXT_BYTES ||
-            chunkLength > CLIPBOARD_MAX_RECV_CHUNK_BYTES ||
+    if (version != LI_CLIPBOARD_VERSION_V1 ||
+            mimeType != LI_CLIPBOARD_MIME_TEXT_UTF8 ||
+            totalLength > LI_CLIPBOARD_MAX_TEXT_BYTES ||
+            chunkLength > CLIPBOARD_V1_MAX_RECV_CHUNK_BYTES ||
             chunkOffset > totalLength ||
             chunkLength > totalLength - chunkOffset ||
             bb.length - bb.position != chunkLength) {
         resetClipboardReassembly();
-        sendClipboardMessage(CLIPBOARD_OP_NACK, 0, sequence, NULL, 0);
+        sendClipboardV1Message(CLIPBOARD_V1_OP_NACK, 0, sequence, NULL, 0);
         return;
     }
 
     switch (op) {
-    case CLIPBOARD_OP_HELLO:
+    case CLIPBOARD_V1_OP_HELLO:
         clipboardNegotiated = true;
-        clipboardHostCanSend = (flags & CLIPBOARD_FLAG_CAN_SEND) != 0;
-        clipboardHostCanReceive = (flags & CLIPBOARD_FLAG_CAN_RECEIVE) != 0;
+        clipboardProtocolVersion = LI_CLIPBOARD_VERSION_V1;
+        clipboardHostCanSend = (flags & CLIPBOARD_V1_FLAG_CAN_SEND) != 0;
+        clipboardHostCanReceive = (flags & CLIPBOARD_V1_FLAG_CAN_RECEIVE) != 0;
+        clipboardHostCapabilities = LI_CLIPBOARD_CAP_TEXT |
+                                    (clipboardHostCanSend ? LI_CLIPBOARD_CAP_CAN_SEND : 0) |
+                                    (clipboardHostCanReceive ? LI_CLIPBOARD_CAP_CAN_RECEIVE : 0);
+        ListenerCallbacks.clipboardReady2(LI_CLIPBOARD_VERSION_V1, clipboardHostCapabilities);
         if (clipboardHostCanReceive) {
             ListenerCallbacks.clipboardReady();
         }
         break;
 
-    case CLIPBOARD_OP_SET:
+    case CLIPBOARD_V1_OP_SET:
         if (!clipboardNegotiated || !clipboardHostCanSend) {
-            sendClipboardMessage(CLIPBOARD_OP_NACK, 0, sequence, NULL, 0);
+            sendClipboardV1Message(CLIPBOARD_V1_OP_NACK, 0, sequence, NULL, 0);
             return;
         }
 
@@ -1113,7 +1450,7 @@ static void handleClipboardMessage(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int pack
             resetClipboardReassembly();
             clipboardRecvBuffer = malloc(totalLength == 0 ? 1 : totalLength);
             if (clipboardRecvBuffer == NULL) {
-                sendClipboardMessage(CLIPBOARD_OP_NACK, 0, sequence, NULL, 0);
+                sendClipboardV1Message(CLIPBOARD_V1_OP_NACK, 0, sequence, NULL, 0);
                 return;
             }
 
@@ -1126,7 +1463,7 @@ static void handleClipboardMessage(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int pack
                 clipboardRecvOffset != chunkOffset ||
                 clipboardRecvBuffer == NULL) {
             resetClipboardReassembly();
-            sendClipboardMessage(CLIPBOARD_OP_NACK, 0, sequence, NULL, 0);
+            sendClipboardV1Message(CLIPBOARD_V1_OP_NACK, 0, sequence, NULL, 0);
             return;
         }
 
@@ -1136,19 +1473,270 @@ static void handleClipboardMessage(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int pack
         clipboardRecvOffset = chunkOffset + chunkLength;
 
         if (clipboardRecvOffset == totalLength) {
+            if (!LiIsValidUtf8ClipboardText(clipboardRecvBuffer, totalLength)) {
+                resetClipboardReassembly();
+                sendClipboardV1Message(CLIPBOARD_V1_OP_NACK, 0, sequence, NULL, 0);
+                return;
+            }
             ListenerCallbacks.clipboardText(clipboardRecvBuffer, totalLength);
             resetClipboardReassembly();
-            sendClipboardMessage(CLIPBOARD_OP_ACK, 0, sequence, NULL, 0);
+            sendClipboardV1Message(CLIPBOARD_V1_OP_ACK, 0, sequence, NULL, 0);
         }
         break;
 
-    case CLIPBOARD_OP_ACK:
-    case CLIPBOARD_OP_NACK:
+    case CLIPBOARD_V1_OP_ACK:
+        break;
+
+    case CLIPBOARD_V1_OP_NACK:
+        if (!clipboardNegotiated && !clipboardV1FallbackAttempted) {
+            clipboardV1FallbackAttempted = true;
+            sendClipboardV1Hello();
+        }
         break;
 
     default:
-        sendClipboardMessage(CLIPBOARD_OP_NACK, 0, sequence, NULL, 0);
+        sendClipboardV1Message(CLIPBOARD_V1_OP_NACK, 0, sequence, NULL, 0);
         break;
+    }
+}
+
+static void handleClipboardV2Message(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLength) {
+    const uint8_t* payload = (const uint8_t*)(ctlHdr + 1);
+    size_t payloadLength = packetLength - sizeof(*ctlHdr);
+    const uint8_t* chunkData;
+    LI_CLIPBOARD_V2_HEADER header;
+    uint32_t sizeLimit;
+
+    if (!LiDecodeClipboardV2Header(payload, payloadLength, &header)) {
+        return;
+    }
+    chunkData = payload + LI_CLIPBOARD_V2_HEADER_SIZE;
+    sizeLimit = LiGetClipboardMimeSizeLimit(header.mimeType);
+
+    if (header.version != LI_CLIPBOARD_VERSION_V2 ||
+            header.chunkLength > LI_CLIPBOARD_MAX_CHUNK_BYTES ||
+            header.chunkOffset > header.totalLength ||
+            header.chunkLength > header.totalLength - header.chunkOffset ||
+            payloadLength != LI_CLIPBOARD_V2_HEADER_SIZE + header.chunkLength) {
+        sendClipboardV2Nack(&header);
+        return;
+    }
+
+    switch (header.op) {
+    case LI_CLIPBOARD_OP_HELLO:
+        if (header.mimeType != LI_CLIPBOARD_MIME_NONE ||
+                header.totalLength != 0 ||
+                header.chunkOffset != 0 ||
+                header.chunkLength != 0 ||
+                header.originId == 0) {
+            sendClipboardV2Nack(&header);
+            return;
+        }
+
+        clipboardProtocolVersion = LI_CLIPBOARD_VERSION_V2;
+        clipboardHostCapabilities = header.flags;
+        clipboardHostCanSend = (header.flags & LI_CLIPBOARD_CAP_CAN_SEND) != 0;
+        clipboardHostCanReceive = (header.flags & LI_CLIPBOARD_CAP_CAN_RECEIVE) != 0;
+        clipboardNegotiated = true;
+        ListenerCallbacks.clipboardReady2(LI_CLIPBOARD_VERSION_V2, header.flags);
+        if (clipboardHostCanReceive &&
+                (header.flags & LI_CLIPBOARD_CAP_TEXT) != 0 &&
+                (clipboardLocalCapabilities & LI_CLIPBOARD_CAP_TEXT) != 0) {
+            ListenerCallbacks.clipboardReady();
+        }
+        break;
+
+    case LI_CLIPBOARD_OP_ANNOUNCE:
+        if (!clipboardNegotiated ||
+                !clipboardHostCanSend ||
+                (clipboardLocalCapabilities & LI_CLIPBOARD_CAP_CAN_RECEIVE) == 0 ||
+                header.originId == 0 ||
+                header.itemId == 0 ||
+                sizeLimit == 0 ||
+                header.totalLength > sizeLimit ||
+                header.chunkOffset != 0 ||
+                header.chunkLength != 0 ||
+                !LiIsClipboardMimeSupported(header.mimeType, clipboardLocalCapabilities) ||
+                !LiIsClipboardMimeSupported(header.mimeType, clipboardHostCapabilities)) {
+            sendClipboardV2Nack(&header);
+            return;
+        }
+
+        if (header.originId == clipboardOriginId) {
+            sendClipboardV2Control(LI_CLIPBOARD_OP_ACK,
+                                   header.mimeType,
+                                   0,
+                                   header.sequence,
+                                   header.originId,
+                                   header.itemId,
+                                   0);
+            return;
+        }
+
+        resetClipboardReassembly();
+        clipboardRequestedOriginId = header.originId;
+        clipboardRequestedItemId = header.itemId;
+        clipboardRequestedMimeType = header.mimeType;
+        sendClipboardV2Control(LI_CLIPBOARD_OP_REQUEST,
+                               header.mimeType,
+                               0,
+                               header.sequence,
+                               header.originId,
+                               header.itemId,
+                               header.totalLength);
+        break;
+
+    case LI_CLIPBOARD_OP_REQUEST:
+        {
+            uint8_t* dataCopy = NULL;
+            uint32_t dataLength = 0;
+            bool matches;
+
+            PltLockMutex(&clipboardMutex);
+            matches = header.originId == clipboardOriginId &&
+                      header.itemId != 0 &&
+                      header.itemId == clipboardLocalItemId &&
+                      header.mimeType == clipboardLocalMimeType &&
+                      clipboardLocalData != NULL;
+            if (matches) {
+                dataLength = clipboardLocalDataLength;
+                dataCopy = malloc(dataLength == 0 ? 1 : dataLength);
+                if (dataCopy != NULL && dataLength != 0) {
+                    memcpy(dataCopy, clipboardLocalData, dataLength);
+                }
+            }
+            PltUnlockMutex(&clipboardMutex);
+
+            if (!matches || dataCopy == NULL ||
+                    header.totalLength != dataLength ||
+                    !sendClipboardV2Data(header.sequence,
+                                         header.mimeType,
+                                         header.originId,
+                                         header.itemId,
+                                         dataCopy,
+                                         dataLength)) {
+                free(dataCopy);
+                sendClipboardV2Nack(&header);
+                return;
+            }
+            free(dataCopy);
+        }
+        break;
+
+    case LI_CLIPBOARD_OP_DATA:
+        if (!clipboardNegotiated ||
+                header.originId != clipboardRequestedOriginId ||
+                header.itemId != clipboardRequestedItemId ||
+                header.mimeType != clipboardRequestedMimeType ||
+                sizeLimit == 0 ||
+                header.totalLength > sizeLimit) {
+            resetClipboardReassembly();
+            sendClipboardV2Nack(&header);
+            return;
+        }
+
+        if (header.chunkOffset == 0) {
+            resetClipboardReassembly();
+            clipboardRecvBuffer = malloc(header.totalLength == 0 ? 1 : header.totalLength);
+            if (clipboardRecvBuffer == NULL) {
+                sendClipboardV2Nack(&header);
+                return;
+            }
+            clipboardRecvSequence = header.sequence;
+            clipboardRecvOriginId = header.originId;
+            clipboardRecvItemId = header.itemId;
+            clipboardRecvMimeType = header.mimeType;
+            clipboardRecvTotalLength = header.totalLength;
+        }
+
+        if (clipboardRecvSequence != header.sequence ||
+                clipboardRecvOriginId != header.originId ||
+                clipboardRecvItemId != header.itemId ||
+                clipboardRecvMimeType != header.mimeType ||
+                clipboardRecvTotalLength != header.totalLength ||
+                clipboardRecvOffset != header.chunkOffset ||
+                clipboardRecvBuffer == NULL) {
+            resetClipboardReassembly();
+            sendClipboardV2Nack(&header);
+            return;
+        }
+
+        if (header.chunkLength != 0) {
+            memcpy(clipboardRecvBuffer + header.chunkOffset, chunkData, header.chunkLength);
+        }
+        clipboardRecvOffset = header.chunkOffset + header.chunkLength;
+
+        if (clipboardRecvOffset == clipboardRecvTotalLength) {
+            bool valid = true;
+            SS_CLIPBOARD_CONTENT content = {
+                .mimeType = clipboardRecvMimeType,
+                .originId = clipboardRecvOriginId,
+                .itemId = clipboardRecvItemId,
+                .length = clipboardRecvTotalLength,
+                .data = clipboardRecvBuffer,
+            };
+
+            if (content.mimeType == LI_CLIPBOARD_MIME_TEXT_UTF8) {
+                valid = LiIsValidUtf8ClipboardText(content.data, content.length);
+            }
+            else if (content.mimeType == LI_CLIPBOARD_MIME_PNG) {
+                valid = LiIsValidClipboardPngHeader(content.data, content.length);
+            }
+            else if (content.mimeType == LI_CLIPBOARD_MIME_BLOB_REFERENCE) {
+                LI_CLIPBOARD_BLOB_REFERENCE reference;
+                valid = LiDecodeClipboardBlobReference(content.data, content.length, &reference);
+            }
+
+            if (valid) {
+                ListenerCallbacks.clipboardContent(&content);
+            }
+            resetClipboardReassembly();
+            clipboardRequestedOriginId = 0;
+            clipboardRequestedItemId = 0;
+            clipboardRequestedMimeType = LI_CLIPBOARD_MIME_NONE;
+            sendClipboardV2Control(valid ? LI_CLIPBOARD_OP_ACK : LI_CLIPBOARD_OP_NACK,
+                                   header.mimeType,
+                                   0,
+                                   header.sequence,
+                                   header.originId,
+                                   header.itemId,
+                                   0);
+        }
+        break;
+
+    case LI_CLIPBOARD_OP_RELEASE:
+        if (header.originId == clipboardRequestedOriginId &&
+                header.itemId == clipboardRequestedItemId) {
+            resetClipboardReassembly();
+            clipboardRequestedOriginId = 0;
+            clipboardRequestedItemId = 0;
+            clipboardRequestedMimeType = LI_CLIPBOARD_MIME_NONE;
+        }
+        break;
+
+    case LI_CLIPBOARD_OP_ACK:
+    case LI_CLIPBOARD_OP_NACK:
+        break;
+
+    default:
+        sendClipboardV2Nack(&header);
+        break;
+    }
+}
+
+static void handleClipboardMessage(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLength) {
+    const uint8_t* payload;
+
+    if (!StreamConfig.enableClipboardSync || packetLength <= (int)sizeof(*ctlHdr)) {
+        return;
+    }
+
+    payload = (const uint8_t*)(ctlHdr + 1);
+    if (payload[0] == LI_CLIPBOARD_VERSION_V2) {
+        handleClipboardV2Message(ctlHdr, packetLength);
+    }
+    else if (payload[0] == LI_CLIPBOARD_VERSION_V1) {
+        handleClipboardV1Message(ctlHdr, packetLength);
     }
 }
 
@@ -2304,7 +2892,8 @@ int startControlStream(void) {
     }
 
     if (StreamConfig.enableClipboardSync && IS_SUNSHINE() && encryptedControlStream) {
-        if (!sendClipboardHello()) {
+        clipboardLocalCapabilities = getClipboardLocalCapabilities();
+        if (!sendClipboardV2Hello()) {
             Limelog("Clipboard sync: failed to send HELLO\n");
         }
     }

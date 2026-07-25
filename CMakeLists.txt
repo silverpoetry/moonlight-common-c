@@ -123,4 +123,8 @@ if (BUILD_TESTING)
   add_executable(srtp-test tests/SrtpTest.c)
   target_link_libraries(srtp-test PRIVATE moonlight-common-c)
   add_test(NAME srtp-test COMMAND srtp-test)
+
+  add_executable(clipboard-test tests/ClipboardTest.c)
+  target_link_libraries(clipboard-test PRIVATE moonlight-common-c)
+  add_test(NAME clipboard-test COMMAND clipboard-test)
 endif()

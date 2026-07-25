@@ -7,6 +7,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "Clipboard.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -109,6 +111,11 @@ typedef struct _STREAM_CONFIGURATION {
     // Requests Sunshine's clipboard sync extension. When enabled, UTF-8 text
     // clipboard contents may be exchanged over the encrypted control stream.
     int enableClipboardSync;
+
+    // Clipboard v2 capabilities requested by the client. Set to a combination
+    // of LI_CLIPBOARD_CAP_* values. A value of zero preserves legacy behavior
+    // and requests bidirectional UTF-8 text synchronization.
+    uint8_t clipboardCapabilities;
 
     // Disables ENet's adaptive packet throttling for the local control stream
     // sender. Unreliable input packets remain ordered and are not retransmitted,
@@ -528,6 +535,23 @@ typedef void(*ConnListenerClipboardText)(const uint8_t* text, uint32_t length);
 // support and the client may begin sending clipboard updates.
 typedef void(*ConnListenerClipboardReady)(void);
 
+typedef struct _SS_CLIPBOARD_CONTENT {
+    uint8_t mimeType;
+    uint8_t reserved[7];
+    uint64_t originId;
+    uint64_t itemId;
+    uint32_t length;
+    const uint8_t* data;
+} SS_CLIPBOARD_CONTENT, *PSS_CLIPBOARD_CONTENT;
+
+// This callback is invoked after Clipboard v2 has reassembled and validated
+// an item requested from the host.
+typedef void(*ConnListenerClipboardContent)(PSS_CLIPBOARD_CONTENT content);
+
+// This callback reports the negotiated clipboard protocol version and the
+// host capabilities available to the client.
+typedef void(*ConnListenerClipboardReady2)(uint8_t version, uint8_t capabilities);
+
 typedef struct _CONNECTION_LISTENER_CALLBACKS {
     ConnListenerStageStarting stageStarting;
     ConnListenerStageComplete stageComplete;
@@ -545,6 +569,8 @@ typedef struct _CONNECTION_LISTENER_CALLBACKS {
     ConnListenerNativeCursor nativeCursor;
     ConnListenerClipboardText clipboardText;
     ConnListenerClipboardReady clipboardReady;
+    ConnListenerClipboardContent clipboardContent;
+    ConnListenerClipboardReady2 clipboardReady2;
 } CONNECTION_LISTENER_CALLBACKS, *PCONNECTION_LISTENER_CALLBACKS;
 
 // Use this function to zero the connection callbacks when allocated on the stack or heap
@@ -783,6 +809,20 @@ int LiSendUtf8TextEvent(const char *text, unsigned int length);
 // Sends UTF-8 text clipboard content to a Sunshine host using the clipboard
 // sync control stream extension.
 int LiSendClipboardText(const uint8_t* text, uint32_t length);
+
+// Announces a Clipboard v2 item and retains its contents until the host
+// requests it or a newer item supersedes it.
+int LiSendClipboardContent(uint8_t mimeType, const uint8_t* data, uint32_t length);
+
+// Announces a Clipboard v2 out-of-band object stored on the host HTTPS
+// clipboard endpoint.
+int LiSendClipboardBlobReference(uint8_t targetMimeType,
+                                 const char* id,
+                                 uint32_t size,
+                                 const uint8_t sha256[LI_CLIPBOARD_SHA256_BYTES]);
+
+// Releases the current Clipboard v2 item without replacing it.
+int LiReleaseClipboardContent(void);
 
 // Button flags
 #define A_FLAG     0x1000

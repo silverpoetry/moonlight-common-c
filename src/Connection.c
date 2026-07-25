@@ -31,6 +31,7 @@ uint16_t AudioPortNumber;
 uint16_t VideoPortNumber;
 SS_PING AudioPingPayload;
 SS_PING VideoPingPayload;
+bool AudioPingPayloadSet;
 uint32_t ControlConnectData;
 uint32_t SunshineFeatureFlags;
 uint32_t EncryptionFeaturesSupported;

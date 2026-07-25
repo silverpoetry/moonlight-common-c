@@ -40,6 +40,7 @@ extern uint16_t VideoPortNumber;
 
 extern SS_PING AudioPingPayload;
 extern SS_PING VideoPingPayload;
+extern bool AudioPingPayloadSet;
 extern uint32_t ControlConnectData;
 
 extern uint32_t SunshineFeatureFlags;

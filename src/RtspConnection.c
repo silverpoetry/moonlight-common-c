@@ -1201,9 +1201,11 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
 
         // Parse the Sunshine ping payload protocol extension if present
         memset(&AudioPingPayload, 0, sizeof(AudioPingPayload));
+        AudioPingPayloadSet = false;
         pingPayload = getOptionContent(response.options, "X-SS-Ping-Payload");
         if (pingPayload != NULL && strlen(pingPayload) == sizeof(AudioPingPayload.payload)) {
             memcpy(AudioPingPayload.payload, pingPayload, sizeof(AudioPingPayload.payload));
+            AudioPingPayloadSet = true;
         }
 
         // Let the audio stream know the port number is now finalized.

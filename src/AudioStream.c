@@ -48,7 +48,7 @@ static void AudioPingThreadProc(void* context) {
     // to sending a packet prior to the host PC binding to that port.
     int pingCount = 0;
     while (!PltIsThreadInterrupted(&udpPingThread)) {
-        if (AudioPingPayload.payload[0] != 0) {
+        if (AudioPingPayloadSet) {
             pingCount++;
             AudioPingPayload.sequenceNumber = BE32(pingCount);
 

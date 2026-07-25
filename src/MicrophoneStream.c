@@ -223,8 +223,7 @@ void destroyMicrophoneStream(void) {
 
 bool LiIsMicrophoneUplinkSupported(void) {
     return IS_SUNSHINE() &&
-           (SunshineFeatureFlags & LI_FF_MICROPHONE_UPLINK) != 0 &&
-           AudioPingPayload.payload[0] != 0;
+           (SunshineFeatureFlags & LI_FF_MICROPHONE_UPLINK) != 0;
 }
 
 int LiStartMicrophoneUplink(void) {

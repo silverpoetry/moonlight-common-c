@@ -58,6 +58,11 @@ static void testBlobReferenceRoundTrip(void) {
     assert(output.idLength == input.idLength);
     assert(strcmp(output.id, input.id) == 0);
     assert(memcmp(output.sha256, input.sha256, sizeof(input.sha256)) == 0);
+
+    input.targetMimeType = LI_CLIPBOARD_MIME_FILE_MANIFEST;
+    assert(LiEncodeClipboardBlobReference(encoded, sizeof(encoded), &input, &encodedLength));
+    assert(LiDecodeClipboardBlobReference(encoded, encodedLength, &output));
+    assert(output.targetMimeType == LI_CLIPBOARD_MIME_FILE_MANIFEST);
 }
 
 static void testUtf8Validation(void) {

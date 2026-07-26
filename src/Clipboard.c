@@ -82,7 +82,8 @@ bool LiEncodeClipboardBlobReference(uint8_t* destination,
     if (destination == NULL || reference == NULL || encodedLength == NULL ||
             reference->idLength == 0 || reference->idLength > LI_CLIPBOARD_BLOB_ID_MAX_BYTES ||
             (reference->targetMimeType != LI_CLIPBOARD_MIME_TEXT_UTF8 &&
-             reference->targetMimeType != LI_CLIPBOARD_MIME_PNG) ||
+             reference->targetMimeType != LI_CLIPBOARD_MIME_PNG &&
+             reference->targetMimeType != LI_CLIPBOARD_MIME_FILE_MANIFEST) ||
             reference->size == 0) {
         return false;
     }
@@ -110,7 +111,9 @@ bool LiDecodeClipboardBlobReference(const uint8_t* source,
 
     if (source == NULL || reference == NULL || sourceLength < LI_CLIPBOARD_BLOB_REFERENCE_HEADER_SIZE ||
             source[0] != LI_CLIPBOARD_BLOB_REFERENCE_VERSION ||
-            (source[1] != LI_CLIPBOARD_MIME_TEXT_UTF8 && source[1] != LI_CLIPBOARD_MIME_PNG) ||
+            (source[1] != LI_CLIPBOARD_MIME_TEXT_UTF8 &&
+             source[1] != LI_CLIPBOARD_MIME_PNG &&
+             source[1] != LI_CLIPBOARD_MIME_FILE_MANIFEST) ||
             source[3] != 0) {
         return false;
     }

@@ -755,6 +755,17 @@ int LiSendTouchpadFrameEvent(uint8_t contactCount, const uint8_t* eventTypes, co
                              const float* x, const float* y, const float* pressure, uint16_t rotation,
                              uint16_t deviceWidthMm, uint16_t deviceHeightMm, uint8_t buttonState);
 
+// Diagnostic variant of LiSendTouchpadFrameEvent() that preserves the source hardware sample
+// timestamp in the protocol's reserved bytes. eventTimeMs must use the client's monotonic clock.
+// The timestamp is intended for interval/jitter analysis and does not require clock
+// synchronization with the host.
+int LiSendTouchpadFrameEventWithTimestamp(uint8_t contactCount, const uint8_t* eventTypes,
+                                          const uint32_t* pointerIds, const float* x,
+                                          const float* y, const float* pressure,
+                                          uint32_t eventTimeMs, uint16_t rotation,
+                                          uint16_t deviceWidthMm, uint16_t deviceHeightMm,
+                                          uint8_t buttonState);
+
 // This function is similar to LiSendTouchEvent() but allows additional parameters relevant for pen
 // input, including tilt and buttons. Tilt is in degrees from vertical in Z dimension (perpendicular
 // to screen, 0..90). See LiSendTouchEvent() for detailed documentation on other parameters.

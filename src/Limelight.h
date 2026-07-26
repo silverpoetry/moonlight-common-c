@@ -112,9 +112,9 @@ typedef struct _STREAM_CONFIGURATION {
     // negotiated using clipboardCapabilities over the encrypted control stream.
     int enableClipboardSync;
 
-    // Clipboard v2 capabilities requested by the client. Set to a combination
-    // of LI_CLIPBOARD_CAP_* values. A value of zero preserves legacy behavior
-    // and requests bidirectional UTF-8 text synchronization.
+    // Clipboard capabilities requested by the client. Set to a combination of
+    // LI_CLIPBOARD_CAP_* values. No capabilities are implied: callers must
+    // explicitly request every supported direction and format.
     uint8_t clipboardCapabilities;
 
     // Disables ENet's adaptive packet throttling for the local control stream

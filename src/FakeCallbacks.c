@@ -42,10 +42,8 @@ static void fakeClSetMotionEventState(uint16_t controllerNumber, uint8_t motionT
 static void fakeClSetAdaptiveTriggers(uint16_t controllerNumber, uint8_t eventFlags, uint8_t typeLeft, uint8_t typeRight, uint8_t *left, uint8_t *right) {};
 static void fakeClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t b) {}
 static void fakeClNativeCursor(PSS_NATIVE_CURSOR_UPDATE cursorUpdate) {}
-static void fakeClClipboardText(const uint8_t* text, uint32_t length) {}
-static void fakeClClipboardReady(void) {}
 static void fakeClClipboardContent(PSS_CLIPBOARD_CONTENT content) {}
-static void fakeClClipboardReady2(uint8_t version, uint8_t capabilities) {}
+static void fakeClClipboardReady(uint8_t capabilities) {}
 
 static CONNECTION_LISTENER_CALLBACKS fakeClCallbacks = {
     .stageStarting = fakeClStageStarting,
@@ -62,10 +60,8 @@ static CONNECTION_LISTENER_CALLBACKS fakeClCallbacks = {
     .setControllerLED = fakeClSetControllerLED,
     .setAdaptiveTriggers = fakeClSetAdaptiveTriggers,
     .nativeCursor = fakeClNativeCursor,
-    .clipboardText = fakeClClipboardText,
-    .clipboardReady = fakeClClipboardReady,
     .clipboardContent = fakeClClipboardContent,
-    .clipboardReady2 = fakeClClipboardReady2,
+    .clipboardReady = fakeClClipboardReady,
 };
 
 void fixupMissingCallbacks(PDECODER_RENDERER_CALLBACKS* drCallbacks, PAUDIO_RENDERER_CALLBACKS* arCallbacks,
@@ -159,17 +155,11 @@ void fixupMissingCallbacks(PDECODER_RENDERER_CALLBACKS* drCallbacks, PAUDIO_REND
         if ((*clCallbacks)->nativeCursor == NULL) {
             (*clCallbacks)->nativeCursor = fakeClNativeCursor;
         }
-        if ((*clCallbacks)->clipboardText == NULL) {
-            (*clCallbacks)->clipboardText = fakeClClipboardText;
-        }
-        if ((*clCallbacks)->clipboardReady == NULL) {
-            (*clCallbacks)->clipboardReady = fakeClClipboardReady;
-        }
         if ((*clCallbacks)->clipboardContent == NULL) {
             (*clCallbacks)->clipboardContent = fakeClClipboardContent;
         }
-        if ((*clCallbacks)->clipboardReady2 == NULL) {
-            (*clCallbacks)->clipboardReady2 = fakeClClipboardReady2;
+        if ((*clCallbacks)->clipboardReady == NULL) {
+            (*clCallbacks)->clipboardReady = fakeClClipboardReady;
         }
     }
 }

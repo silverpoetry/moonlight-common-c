@@ -33,10 +33,10 @@ static void writeLe64(uint8_t* destination, uint64_t value) {
     writeLe32(destination + 4, (uint32_t)(value >> 32));
 }
 
-bool LiEncodeClipboardV2Header(uint8_t* destination,
-                               size_t destinationLength,
-                               const LI_CLIPBOARD_V2_HEADER* header) {
-    if (destination == NULL || header == NULL || destinationLength < LI_CLIPBOARD_V2_HEADER_SIZE) {
+bool LiEncodeClipboardHeader(uint8_t* destination,
+                             size_t destinationLength,
+                             const LI_CLIPBOARD_HEADER* header) {
+    if (destination == NULL || header == NULL || destinationLength < LI_CLIPBOARD_HEADER_SIZE) {
         return false;
     }
 
@@ -53,10 +53,10 @@ bool LiEncodeClipboardV2Header(uint8_t* destination,
     return true;
 }
 
-bool LiDecodeClipboardV2Header(const uint8_t* source,
-                               size_t sourceLength,
-                               PLI_CLIPBOARD_V2_HEADER header) {
-    if (source == NULL || header == NULL || sourceLength < LI_CLIPBOARD_V2_HEADER_SIZE) {
+bool LiDecodeClipboardHeader(const uint8_t* source,
+                             size_t sourceLength,
+                             PLI_CLIPBOARD_HEADER header) {
+    if (source == NULL || header == NULL || sourceLength < LI_CLIPBOARD_HEADER_SIZE) {
         return false;
     }
 

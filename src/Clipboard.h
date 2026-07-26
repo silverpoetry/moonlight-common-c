@@ -10,11 +10,8 @@ extern "C" {
 
 #define LI_CLIPBOARD_PTYPE 0x3001
 
-#define LI_CLIPBOARD_VERSION_V1 1
-#define LI_CLIPBOARD_VERSION_V2 2
-
-#define LI_CLIPBOARD_V1_HEADER_SIZE 20
-#define LI_CLIPBOARD_V2_HEADER_SIZE 36
+#define LI_CLIPBOARD_VERSION 2
+#define LI_CLIPBOARD_HEADER_SIZE 36
 
 #define LI_CLIPBOARD_MAX_TEXT_BYTES (1024U * 1024U)
 #define LI_CLIPBOARD_MAX_PNG_INLINE_BYTES (1024U * 1024U)
@@ -61,7 +58,7 @@ extern "C" {
 #define LI_CLIPBOARD_FILE_TYPE_REGULAR 1
 #define LI_CLIPBOARD_FILE_TYPE_DIRECTORY 2
 
-typedef struct _LI_CLIPBOARD_V2_HEADER {
+typedef struct _LI_CLIPBOARD_HEADER {
     uint8_t version;
     uint8_t op;
     uint8_t mimeType;
@@ -72,7 +69,7 @@ typedef struct _LI_CLIPBOARD_V2_HEADER {
     uint32_t totalLength;
     uint32_t chunkOffset;
     uint32_t chunkLength;
-} LI_CLIPBOARD_V2_HEADER, *PLI_CLIPBOARD_V2_HEADER;
+} LI_CLIPBOARD_HEADER, *PLI_CLIPBOARD_HEADER;
 
 typedef struct _LI_CLIPBOARD_BLOB_REFERENCE {
     uint8_t targetMimeType;
@@ -96,13 +93,13 @@ typedef struct _LI_CLIPBOARD_FILE_MANIFEST_ENTRY {
     const uint8_t* path;
 } LI_CLIPBOARD_FILE_MANIFEST_ENTRY, *PLI_CLIPBOARD_FILE_MANIFEST_ENTRY;
 
-bool LiEncodeClipboardV2Header(uint8_t* destination,
-                               size_t destinationLength,
-                               const LI_CLIPBOARD_V2_HEADER* header);
+bool LiEncodeClipboardHeader(uint8_t* destination,
+                             size_t destinationLength,
+                             const LI_CLIPBOARD_HEADER* header);
 
-bool LiDecodeClipboardV2Header(const uint8_t* source,
-                               size_t sourceLength,
-                               PLI_CLIPBOARD_V2_HEADER header);
+bool LiDecodeClipboardHeader(const uint8_t* source,
+                             size_t sourceLength,
+                             PLI_CLIPBOARD_HEADER header);
 
 bool LiEncodeClipboardBlobReference(uint8_t* destination,
                                     size_t destinationLength,

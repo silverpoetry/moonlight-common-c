@@ -4,8 +4,8 @@
 #include <string.h>
 
 static void testHeaderRoundTrip(void) {
-    LI_CLIPBOARD_V2_HEADER input = {
-        .version = LI_CLIPBOARD_VERSION_V2,
+    LI_CLIPBOARD_HEADER input = {
+        .version = LI_CLIPBOARD_VERSION,
         .op = LI_CLIPBOARD_OP_DATA,
         .mimeType = LI_CLIPBOARD_MIME_PNG,
         .flags = LI_CLIPBOARD_CAP_CAN_SEND | LI_CLIPBOARD_CAP_PNG,
@@ -16,11 +16,11 @@ static void testHeaderRoundTrip(void) {
         .chunkOffset = 16384,
         .chunkLength = 8192,
     };
-    LI_CLIPBOARD_V2_HEADER output;
-    uint8_t encoded[LI_CLIPBOARD_V2_HEADER_SIZE];
+    LI_CLIPBOARD_HEADER output;
+    uint8_t encoded[LI_CLIPBOARD_HEADER_SIZE];
 
-    assert(LiEncodeClipboardV2Header(encoded, sizeof(encoded), &input));
-    assert(LiDecodeClipboardV2Header(encoded, sizeof(encoded), &output));
+    assert(LiEncodeClipboardHeader(encoded, sizeof(encoded), &input));
+    assert(LiDecodeClipboardHeader(encoded, sizeof(encoded), &output));
     assert(output.version == input.version);
     assert(output.op == input.op);
     assert(output.mimeType == input.mimeType);
@@ -31,8 +31,8 @@ static void testHeaderRoundTrip(void) {
     assert(output.totalLength == input.totalLength);
     assert(output.chunkOffset == input.chunkOffset);
     assert(output.chunkLength == input.chunkLength);
-    assert(!LiEncodeClipboardV2Header(encoded, sizeof(encoded) - 1, &input));
-    assert(!LiDecodeClipboardV2Header(encoded, sizeof(encoded) - 1, &output));
+    assert(!LiEncodeClipboardHeader(encoded, sizeof(encoded) - 1, &input));
+    assert(!LiDecodeClipboardHeader(encoded, sizeof(encoded) - 1, &output));
 }
 
 static void testBlobReferenceRoundTrip(void) {

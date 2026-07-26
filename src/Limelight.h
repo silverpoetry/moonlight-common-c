@@ -527,14 +527,6 @@ typedef struct _SS_NATIVE_CURSOR_UPDATE {
 // This callback is invoked when a Sunshine host sends a native cursor update.
 typedef void(*ConnListenerNativeCursor)(PSS_NATIVE_CURSOR_UPDATE cursorUpdate);
 
-// This callback is invoked when Sunshine sends text clipboard content via its
-// encrypted control stream extension.
-typedef void(*ConnListenerClipboardText)(const uint8_t* text, uint32_t length);
-
-// This callback is invoked when the host has acknowledged clipboard sync
-// support and the client may begin sending clipboard updates.
-typedef void(*ConnListenerClipboardReady)(void);
-
 typedef struct _SS_CLIPBOARD_CONTENT {
     uint8_t mimeType;
     uint8_t reserved[7];
@@ -544,13 +536,13 @@ typedef struct _SS_CLIPBOARD_CONTENT {
     const uint8_t* data;
 } SS_CLIPBOARD_CONTENT, *PSS_CLIPBOARD_CONTENT;
 
-// This callback is invoked after Clipboard v2 has reassembled and validated
-// an item requested from the host.
+// This callback is invoked after the clipboard protocol has reassembled and
+// validated an item requested from the host.
 typedef void(*ConnListenerClipboardContent)(PSS_CLIPBOARD_CONTENT content);
 
-// This callback reports the negotiated clipboard protocol version and the
-// host capabilities available to the client.
-typedef void(*ConnListenerClipboardReady2)(uint8_t version, uint8_t capabilities);
+// This callback reports the host capabilities after the clipboard protocol
+// handshake completes.
+typedef void(*ConnListenerClipboardReady)(uint8_t capabilities);
 
 typedef struct _CONNECTION_LISTENER_CALLBACKS {
     ConnListenerStageStarting stageStarting;
@@ -567,10 +559,8 @@ typedef struct _CONNECTION_LISTENER_CALLBACKS {
     ConnListenerSetControllerLED setControllerLED;
     ConnListenerSetAdaptiveTriggers setAdaptiveTriggers;
     ConnListenerNativeCursor nativeCursor;
-    ConnListenerClipboardText clipboardText;
-    ConnListenerClipboardReady clipboardReady;
     ConnListenerClipboardContent clipboardContent;
-    ConnListenerClipboardReady2 clipboardReady2;
+    ConnListenerClipboardReady clipboardReady;
 } CONNECTION_LISTENER_CALLBACKS, *PCONNECTION_LISTENER_CALLBACKS;
 
 // Use this function to zero the connection callbacks when allocated on the stack or heap
@@ -806,15 +796,11 @@ int LiSendKeyboardEvent2(short keyCode, char keyAction, char modifiers, char fla
 // This function queues an UTF-8 encoded text to be sent to the remote server.
 int LiSendUtf8TextEvent(const char *text, unsigned int length);
 
-// Sends UTF-8 text clipboard content to a Sunshine host using the clipboard
-// sync control stream extension.
-int LiSendClipboardText(const uint8_t* text, uint32_t length);
-
-// Announces a Clipboard v2 item and retains its contents until the host
+// Announces a clipboard item and retains its contents until the host
 // requests it or a newer item supersedes it.
 int LiSendClipboardContent(uint8_t mimeType, const uint8_t* data, uint32_t length);
 
-// Announces a Clipboard v2 out-of-band object stored on the host HTTPS
+// Announces an out-of-band object stored on the host HTTPS
 // clipboard endpoint. The size identifies the referenced object (for file
 // transfers, the manifest), not the sum of the referenced file contents.
 int LiSendClipboardBlobReference(uint8_t targetMimeType,
@@ -822,7 +808,7 @@ int LiSendClipboardBlobReference(uint8_t targetMimeType,
                                  uint32_t size,
                                  const uint8_t sha256[LI_CLIPBOARD_SHA256_BYTES]);
 
-// Releases the current Clipboard v2 item without replacing it.
+// Releases the current clipboard item without replacing it.
 int LiReleaseClipboardContent(void);
 
 // Returns this connection's random Clipboard v2 endpoint identity.

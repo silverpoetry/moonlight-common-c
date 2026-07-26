@@ -168,12 +168,12 @@ static bool isReservedWindowsPathSegment(const uint8_t* segment, size_t length) 
         return true;
     }
     if (baseLength == 4 &&
-            ((segment[0] == 'C' || segment[0] == 'c') &&
-             (segment[1] == 'O' || segment[1] == 'o') &&
-             (segment[2] == 'M' || segment[2] == 'm') ||
-             (segment[0] == 'L' || segment[0] == 'l') &&
-             (segment[1] == 'P' || segment[1] == 'p') &&
-             (segment[2] == 'T' || segment[2] == 't')) &&
+            (((segment[0] == 'C' || segment[0] == 'c') &&
+              (segment[1] == 'O' || segment[1] == 'o') &&
+              (segment[2] == 'M' || segment[2] == 'm')) ||
+             ((segment[0] == 'L' || segment[0] == 'l') &&
+              (segment[1] == 'P' || segment[1] == 'p') &&
+              (segment[2] == 'T' || segment[2] == 't'))) &&
             segment[3] >= '1' && segment[3] <= '9') {
         return true;
     }
@@ -348,11 +348,23 @@ static bool clipboardFilePathsEqual(const LI_CLIPBOARD_FILE_MANIFEST_ENTRY* firs
     return true;
 }
 
+static bool clipboardFilePathEqualsBytes(const LI_CLIPBOARD_FILE_MANIFEST_ENTRY* entry,
+                                         const uint8_t* path,
+                                         size_t pathLength) {
+    LI_CLIPBOARD_FILE_MANIFEST_ENTRY pathEntry;
+
+    memset(&pathEntry, 0, sizeof(pathEntry));
+    pathEntry.path = path;
+    pathEntry.pathLength = (uint32_t)pathLength;
+    return clipboardFilePathsEqual(entry, &pathEntry);
+}
+
 bool LiIsValidClipboardFileManifest(const uint8_t* manifest, size_t length) {
     LI_CLIPBOARD_FILE_MANIFEST_HEADER header;
     LI_CLIPBOARD_FILE_MANIFEST_ENTRY current;
     uint64_t totalFileBytes = 0;
     uint32_t fileCount = 0;
+    uint32_t topLevelCount = 0;
     size_t offset = LI_CLIPBOARD_FILE_MANIFEST_HEADER_SIZE;
 
     if (manifest == NULL || length > LI_CLIPBOARD_MAX_FILE_MANIFEST_BYTES ||
@@ -375,6 +387,17 @@ bool LiIsValidClipboardFileManifest(const uint8_t* manifest, size_t length) {
         }
 
         size_t previousOffset = LI_CLIPBOARD_FILE_MANIFEST_HEADER_SIZE;
+        bool parentFound = false;
+        size_t parentLength = 0;
+        for (uint32_t pathIndex = 0; pathIndex < current.pathLength; pathIndex++) {
+            if (current.path[pathIndex] == '/') {
+                parentLength = pathIndex;
+            }
+        }
+        if (parentLength == 0) {
+            topLevelCount++;
+            parentFound = true;
+        }
         for (uint32_t previousIndex = 0; previousIndex < i; previousIndex++) {
             LI_CLIPBOARD_FILE_MANIFEST_ENTRY previous;
             if (!LiDecodeClipboardFileManifestEntry(manifest, currentOffset, &previousOffset, &previous)) {
@@ -383,11 +406,22 @@ bool LiIsValidClipboardFileManifest(const uint8_t* manifest, size_t length) {
             if (clipboardFilePathsEqual(&current, &previous)) {
                 return false;
             }
+            if (parentLength != 0 &&
+                    previous.type == LI_CLIPBOARD_FILE_TYPE_DIRECTORY &&
+                    clipboardFilePathEqualsBytes(&previous,
+                                                 current.path,
+                                                 parentLength)) {
+                parentFound = true;
+            }
+        }
+        if (!parentFound) {
+            return false;
         }
     }
 
     return offset == length &&
            fileCount == header.fileCount &&
+           topLevelCount != 0 &&
            totalFileBytes == header.totalFileBytes;
 }
 

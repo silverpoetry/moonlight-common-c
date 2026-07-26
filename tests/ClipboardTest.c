@@ -173,6 +173,19 @@ static void testFileManifestRejectsUnsafePaths(void) {
         };
         assert(!LiEncodeClipboardFileManifestEntry(encoded, sizeof(encoded), &entry, &encodedLength));
     }
+
+    LI_CLIPBOARD_FILE_MANIFEST_HEADER header = {
+        .entryCount = 1,
+        .fileCount = 1,
+        .totalFileBytes = 1,
+    };
+    assert(LiEncodeClipboardFileManifestHeader(encoded, sizeof(encoded), &header));
+    size_t length = appendManifestEntry(encoded, sizeof(encoded),
+                                        LI_CLIPBOARD_FILE_MANIFEST_HEADER_SIZE,
+                                        LI_CLIPBOARD_FILE_TYPE_REGULAR,
+                                        "missing/file.txt",
+                                        1);
+    assert(!LiIsValidClipboardFileManifest(encoded, length));
 }
 
 int main(void) {

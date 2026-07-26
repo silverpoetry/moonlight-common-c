@@ -25,7 +25,6 @@ static uint8_t currentPenButtonState;
 static uint8_t currentTouchpadButtonState;
 
 #define CLAMP(val, min, max) (((val) < (min)) ? (min) : (((val) > (max)) ? (max) : (val)))
-#define TRACE_MAX(a, b) ((a) > (b) ? (a) : (b))
 
 #define MAX_INPUT_PACKET_SIZE 128
 #define INPUT_STREAM_TIMEOUT_SEC 10
@@ -54,7 +53,6 @@ typedef struct _PACKET_HOLDER {
     LINKED_BLOCKING_QUEUE_ENTRY entry;
     uint32_t enetPacketFlags;
     uint8_t channelId;
-    uint64_t traceEnqueueTimeMs;
 
     // The union must be the last member since we abuse the NV_UNICODE_PACKET
     // text field to store variable length data which gets split before being
@@ -98,8 +96,6 @@ static struct {
     bool dirty; // Update ready to send (queued packet holder in packetQueue)
 } currentAbsoluteMouseState;
 
-static uint8_t touchpadTraceSequence;
-
 // Initializes the input stream
 int initializeInputStream(void) {
     memcpy(currentAesIv, StreamConfig.remoteInputAesIv, sizeof(currentAesIv));
@@ -123,7 +119,6 @@ int initializeInputStream(void) {
 
     currentPenButtonState = 0;
     currentTouchpadButtonState = 0;
-    touchpadTraceSequence = 0;
 
     // Start with the virtual mouse centered
     absCurrentPosX = absCurrentPosY = 0.5f;
@@ -334,13 +329,6 @@ static uint16_t normalizedFloatToUint16(float in) {
     return (uint16_t)(clamped * 65535.0f + 0.5f);
 }
 
-static uint32_t getTouchpadFrameTraceTime(PSS_TOUCHPAD_FRAME_PACKET packet) {
-    return (uint32_t)packet->contacts[1].zero[0] |
-           ((uint32_t)packet->contacts[2].zero[0] << 8) |
-           ((uint32_t)packet->contacts[3].zero[0] << 16) |
-           ((uint32_t)packet->contacts[4].zero[0] << 24);
-}
-
 // Input thread proc
 static void inputSendThreadProc(void* context) {
     SOCK_RET err;
@@ -360,21 +348,6 @@ static void inputSendThreadProc(void* context) {
     uint64_t lastMousePacketTime = 0;
     uint64_t lastPenPacketTime = 0;
     uint64_t lastTouchpadFlushTime = 0;
-    uint64_t traceWindowStartTime = 0;
-    uint64_t traceLastSendTime = 0;
-    uint32_t traceLastSourceTime = 0;
-    uint64_t traceQueueDelayTotal = 0;
-    uint64_t traceSourceGapTotal = 0;
-    uint64_t traceMaxQueueDelay = 0;
-    uint64_t traceMaxSourceGap = 0;
-    uint64_t traceMaxSendGap = 0;
-    uint64_t traceMaxSendCall = 0;
-    int traceFrameCount = 0;
-    int traceSourceIntervals = 0;
-    int traceMaxQueueDepth = 0;
-    int traceFlushCount = 0;
-    uint8_t traceFirstSequence = 0;
-    uint8_t traceLastSequence = 0;
 
     while (!PltIsThreadInterrupted(&inputSendThread)) {
         err = LbqWaitForQueueElement(&packetQueue, (void**)&holder);
@@ -657,103 +630,10 @@ static void inputSendThreadProc(void* context) {
             }
         }
 
-        bool isTracedTouchpadFrame =
-            holder->packet.header.magic == LE32(SS_TOUCHPAD_FRAME_MAGIC) &&
-            getTouchpadFrameTraceTime(&holder->packet.touchpadFrame) != 0;
-        uint64_t traceSendStart = 0;
-        uint32_t traceSourceTime = 0;
-        int traceQueueDepth = 0;
-
-        if (isTracedTouchpadFrame) {
-            traceSendStart = PltGetMillis();
-            traceSourceTime = getTouchpadFrameTraceTime(&holder->packet.touchpadFrame);
-            traceQueueDepth = LbqGetItemCount(&packetQueue);
-        }
-
         // Encrypt and send the input packet
         if (!sendInputPacket(holder, moreData)) {
             freePacketHolder(holder);
             return;
-        }
-
-        if (isTracedTouchpadFrame) {
-            uint64_t now = PltGetMillis();
-            uint64_t queueDelay = now - holder->traceEnqueueTimeMs;
-            uint64_t sendCall = now - traceSendStart;
-            uint64_t sendGap = traceLastSendTime == 0 ? 0 : now - traceLastSendTime;
-            uint32_t sourceGap = traceLastSourceTime == 0 ? 0 : traceSourceTime - traceLastSourceTime;
-            uint8_t sequence = holder->packet.touchpadFrame.contacts[0].zero[0];
-
-            if (traceWindowStartTime == 0) {
-                traceWindowStartTime = now;
-            }
-            if (traceFrameCount == 0) {
-                traceFirstSequence = sequence;
-            }
-
-            traceFrameCount++;
-            traceLastSequence = sequence;
-            traceQueueDelayTotal += queueDelay;
-            traceMaxQueueDelay = TRACE_MAX(traceMaxQueueDelay, queueDelay);
-            traceMaxSendCall = TRACE_MAX(traceMaxSendCall, sendCall);
-            traceMaxQueueDepth = TRACE_MAX(traceMaxQueueDepth, traceQueueDepth);
-            if (!moreData) {
-                traceFlushCount++;
-            }
-
-            if (sendGap != 0) {
-                traceMaxSendGap = TRACE_MAX(traceMaxSendGap, sendGap);
-            }
-            if (sourceGap != 0) {
-                traceSourceGapTotal += sourceGap;
-                traceMaxSourceGap = TRACE_MAX(traceMaxSourceGap, sourceGap);
-                traceSourceIntervals++;
-            }
-
-            if (sendGap > 20 || sourceGap > 20 || queueDelay > 20 || sendCall > 20) {
-                Limelog("TPTRACE_CLIENT_TX_GAP t_ms=%llu seq=%u source_gap_ms=%u send_gap_ms=%llu queue_delay_ms=%llu send_call_ms=%llu queue_depth=%d more=%d\n",
-                        (unsigned long long)now, sequence, sourceGap,
-                        (unsigned long long)sendGap, (unsigned long long)queueDelay,
-                        (unsigned long long)sendCall, traceQueueDepth, moreData ? 1 : 0);
-            }
-
-            traceLastSendTime = now;
-            traceLastSourceTime = traceSourceTime;
-
-            bool stateChange = holder->enetPacketFlags != 0;
-            if (now - traceWindowStartTime >= 500 || stateChange) {
-                uint32_t estimatedRtt = 0;
-                uint32_t estimatedRttVariance = 0;
-                bool haveRtt = LiGetEstimatedRttInfo(&estimatedRtt, &estimatedRttVariance);
-                uint64_t elapsed = TRACE_MAX(now - traceWindowStartTime, 1);
-
-                Limelog("TPTRACE_CLIENT_TX t_ms=%llu window_ms=%llu frames=%d rate_hz=%.1f seq=%u-%u source_gap_avg_ms=%.2f source_gap_max_ms=%llu send_gap_max_ms=%llu queue_delay_avg_ms=%.2f queue_delay_max_ms=%llu send_call_max_ms=%llu queue_max=%d flushes=%d rtt_ms=%u rtt_var_ms=%u\n",
-                        (unsigned long long)now, (unsigned long long)elapsed, traceFrameCount,
-                        traceFrameCount * 1000.0 / elapsed, traceFirstSequence,
-                        traceLastSequence,
-                        traceSourceIntervals == 0 ? 0.0 :
-                            traceSourceGapTotal / (double)traceSourceIntervals,
-                        (unsigned long long)traceMaxSourceGap,
-                        (unsigned long long)traceMaxSendGap,
-                        traceFrameCount == 0 ? 0.0 :
-                            traceQueueDelayTotal / (double)traceFrameCount,
-                        (unsigned long long)traceMaxQueueDelay,
-                        (unsigned long long)traceMaxSendCall, traceMaxQueueDepth,
-                        traceFlushCount, haveRtt ? estimatedRtt : 0,
-                        haveRtt ? estimatedRttVariance : 0);
-
-                traceWindowStartTime = now;
-                traceQueueDelayTotal = 0;
-                traceSourceGapTotal = 0;
-                traceMaxQueueDelay = 0;
-                traceMaxSourceGap = 0;
-                traceMaxSendGap = 0;
-                traceMaxSendCall = 0;
-                traceFrameCount = 0;
-                traceSourceIntervals = 0;
-                traceMaxQueueDepth = 0;
-                traceFlushCount = 0;
-            }
         }
 
         freePacketHolder(holder);
@@ -1567,12 +1447,9 @@ int LiSendTouchpadEvent(uint8_t eventType, uint32_t pointerId, float x, float y,
     return err;
 }
 
-static int sendTouchpadFrameEvent(uint8_t contactCount, const uint8_t* eventTypes,
-                                  const uint32_t* pointerIds, const float* x,
-                                  const float* y, const float* pressure,
-                                  uint32_t eventTimeMs, uint16_t rotation,
-                                  uint16_t deviceWidthMm, uint16_t deviceHeightMm,
-                                  uint8_t buttonState) {
+int LiSendTouchpadFrameEvent(uint8_t contactCount, const uint8_t* eventTypes, const uint32_t* pointerIds,
+                             const float* x, const float* y, const float* pressure, uint16_t rotation,
+                             uint16_t deviceWidthMm, uint16_t deviceHeightMm, uint8_t buttonState) {
     PPACKET_HOLDER holder;
     int err;
     bool batchable = true;
@@ -1606,14 +1483,6 @@ static int sendTouchpadFrameEvent(uint8_t contactCount, const uint8_t* eventType
     holder->packet.touchpadFrame.deviceHeightMm = LE16(deviceHeightMm);
     memset(holder->packet.touchpadFrame.contacts, 0, sizeof(holder->packet.touchpadFrame.contacts));
 
-    if (eventTimeMs != 0) {
-        holder->packet.touchpadFrame.contacts[0].zero[0] = ++touchpadTraceSequence;
-        holder->packet.touchpadFrame.contacts[1].zero[0] = (uint8_t)eventTimeMs;
-        holder->packet.touchpadFrame.contacts[2].zero[0] = (uint8_t)(eventTimeMs >> 8);
-        holder->packet.touchpadFrame.contacts[3].zero[0] = (uint8_t)(eventTimeMs >> 16);
-        holder->packet.touchpadFrame.contacts[4].zero[0] = (uint8_t)(eventTimeMs >> 24);
-    }
-
     for (uint8_t i = 0; i < contactCount; i++) {
         holder->packet.touchpadFrame.contacts[i].eventType = eventTypes[i];
         holder->packet.touchpadFrame.contacts[i].pointerId = LE32(pointerIds[i]);
@@ -1631,7 +1500,6 @@ static int sendTouchpadFrameEvent(uint8_t contactCount, const uint8_t* eventType
     // (even alongside move/hover contacts) must be delivered reliably so clicks aren't lost.
     holder->enetPacketFlags = (batchable && !(buttonState ^ currentTouchpadButtonState)) ? 0 : ENET_PACKET_FLAG_RELIABLE;
     currentTouchpadButtonState = buttonState;
-    holder->traceEnqueueTimeMs = PltGetMillis();
 
     err = LbqOfferQueueItem(&packetQueue, holder, &holder->entry);
     if (err != LBQ_SUCCESS) {
@@ -1641,26 +1509,6 @@ static int sendTouchpadFrameEvent(uint8_t contactCount, const uint8_t* eventType
     }
 
     return err;
-}
-
-int LiSendTouchpadFrameEvent(uint8_t contactCount, const uint8_t* eventTypes,
-                             const uint32_t* pointerIds, const float* x,
-                             const float* y, const float* pressure, uint16_t rotation,
-                             uint16_t deviceWidthMm, uint16_t deviceHeightMm,
-                             uint8_t buttonState) {
-    return sendTouchpadFrameEvent(contactCount, eventTypes, pointerIds, x, y, pressure, 0,
-                                  rotation, deviceWidthMm, deviceHeightMm, buttonState);
-}
-
-int LiSendTouchpadFrameEventWithTimestamp(uint8_t contactCount, const uint8_t* eventTypes,
-                                          const uint32_t* pointerIds, const float* x,
-                                          const float* y, const float* pressure,
-                                          uint32_t eventTimeMs, uint16_t rotation,
-                                          uint16_t deviceWidthMm, uint16_t deviceHeightMm,
-                                          uint8_t buttonState) {
-    return sendTouchpadFrameEvent(contactCount, eventTypes, pointerIds, x, y, pressure,
-                                  eventTimeMs, rotation, deviceWidthMm, deviceHeightMm,
-                                  buttonState);
 }
 
 int LiSendPenEvent(uint8_t eventType, uint8_t toolType, uint8_t penButtons,

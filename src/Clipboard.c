@@ -434,7 +434,9 @@ bool LiIsClipboardMimeSupported(uint8_t mimeType, uint8_t capabilities) {
     case LI_CLIPBOARD_MIME_BLOB_REFERENCE:
         return (capabilities & LI_CLIPBOARD_CAP_BLOB) != 0;
     case LI_CLIPBOARD_MIME_FILE_MANIFEST:
-        return (capabilities & LI_CLIPBOARD_CAP_FILES) != 0;
+        return (capabilities &
+                (LI_CLIPBOARD_CAP_FILES | LI_CLIPBOARD_CAP_FILE_STREAMS)) ==
+               (LI_CLIPBOARD_CAP_FILES | LI_CLIPBOARD_CAP_FILE_STREAMS);
     default:
         return false;
     }

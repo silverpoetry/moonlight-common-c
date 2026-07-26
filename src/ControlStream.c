@@ -1026,15 +1026,22 @@ static uint8_t getClipboardLocalCapabilities(void) {
     uint8_t capabilities = StreamConfig.clipboardCapabilities &
                            (LI_CLIPBOARD_CAP_CAN_SEND |
                             LI_CLIPBOARD_CAP_CAN_RECEIVE |
-                            LI_CLIPBOARD_CAP_TEXT |
-                            LI_CLIPBOARD_CAP_PNG |
-                            LI_CLIPBOARD_CAP_BLOB |
-                            LI_CLIPBOARD_CAP_FILES);
+                             LI_CLIPBOARD_CAP_TEXT |
+                             LI_CLIPBOARD_CAP_PNG |
+                             LI_CLIPBOARD_CAP_BLOB |
+                             LI_CLIPBOARD_CAP_FILES |
+                             LI_CLIPBOARD_CAP_FILE_STREAMS);
 
     if ((capabilities & (LI_CLIPBOARD_CAP_TEXT |
                          LI_CLIPBOARD_CAP_PNG |
                          LI_CLIPBOARD_CAP_FILES)) == 0) {
         capabilities |= LI_CLIPBOARD_CAP_TEXT;
+    }
+    if ((capabilities & LI_CLIPBOARD_CAP_FILE_STREAMS) == 0) {
+        capabilities &= ~LI_CLIPBOARD_CAP_FILES;
+    }
+    if ((capabilities & LI_CLIPBOARD_CAP_FILES) == 0) {
+        capabilities &= ~LI_CLIPBOARD_CAP_FILE_STREAMS;
     }
     if ((capabilities & (LI_CLIPBOARD_CAP_CAN_SEND | LI_CLIPBOARD_CAP_CAN_RECEIVE)) == 0) {
         capabilities |= LI_CLIPBOARD_CAP_CAN_SEND | LI_CLIPBOARD_CAP_CAN_RECEIVE;

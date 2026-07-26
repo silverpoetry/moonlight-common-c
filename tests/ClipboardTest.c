@@ -188,6 +188,16 @@ static void testFileManifestRejectsUnsafePaths(void) {
     assert(!LiIsValidClipboardFileManifest(encoded, length));
 }
 
+static void testFileStreamingCapability(void) {
+    assert(!LiIsClipboardMimeSupported(LI_CLIPBOARD_MIME_FILE_MANIFEST,
+                                       LI_CLIPBOARD_CAP_FILES));
+    assert(!LiIsClipboardMimeSupported(LI_CLIPBOARD_MIME_FILE_MANIFEST,
+                                       LI_CLIPBOARD_CAP_FILE_STREAMS));
+    assert(LiIsClipboardMimeSupported(
+        LI_CLIPBOARD_MIME_FILE_MANIFEST,
+        LI_CLIPBOARD_CAP_FILES | LI_CLIPBOARD_CAP_FILE_STREAMS));
+}
+
 int main(void) {
     testHeaderRoundTrip();
     testBlobReferenceRoundTrip();
@@ -195,5 +205,6 @@ int main(void) {
     testPngHeaderValidation();
     testFileManifestValidation();
     testFileManifestRejectsUnsafePaths();
+    testFileStreamingCapability();
     return 0;
 }

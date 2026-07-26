@@ -1028,15 +1028,18 @@ static uint8_t getClipboardLocalCapabilities(void) {
                             LI_CLIPBOARD_CAP_CAN_RECEIVE |
                             LI_CLIPBOARD_CAP_TEXT |
                             LI_CLIPBOARD_CAP_PNG |
-                            LI_CLIPBOARD_CAP_BLOB);
+                            LI_CLIPBOARD_CAP_BLOB |
+                            LI_CLIPBOARD_CAP_FILES);
 
-    if ((capabilities & (LI_CLIPBOARD_CAP_TEXT | LI_CLIPBOARD_CAP_PNG)) == 0) {
+    if ((capabilities & (LI_CLIPBOARD_CAP_TEXT |
+                         LI_CLIPBOARD_CAP_PNG |
+                         LI_CLIPBOARD_CAP_FILES)) == 0) {
         capabilities |= LI_CLIPBOARD_CAP_TEXT;
     }
     if ((capabilities & (LI_CLIPBOARD_CAP_CAN_SEND | LI_CLIPBOARD_CAP_CAN_RECEIVE)) == 0) {
         capabilities |= LI_CLIPBOARD_CAP_CAN_SEND | LI_CLIPBOARD_CAP_CAN_RECEIVE;
     }
-    if ((capabilities & LI_CLIPBOARD_CAP_PNG) == 0) {
+    if ((capabilities & (LI_CLIPBOARD_CAP_PNG | LI_CLIPBOARD_CAP_FILES)) == 0) {
         capabilities &= ~LI_CLIPBOARD_CAP_BLOB;
     }
 

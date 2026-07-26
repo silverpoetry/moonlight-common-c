@@ -89,10 +89,93 @@ static void testPngHeaderValidation(void) {
     assert(!LiIsValidClipboardPngHeader(invalidHeader, sizeof(invalidHeader)));
 }
 
+static size_t appendManifestEntry(uint8_t* manifest,
+                                  size_t capacity,
+                                  size_t offset,
+                                  uint8_t type,
+                                  const char* path,
+                                  uint64_t size) {
+    LI_CLIPBOARD_FILE_MANIFEST_ENTRY entry = {
+        .type = type,
+        .pathLength = (uint32_t)strlen(path),
+        .size = size,
+        .modifiedTimeMs = UINT64_C(1720000000000),
+        .path = (const uint8_t*)path,
+    };
+    size_t encodedLength = 0;
+
+    assert(LiEncodeClipboardFileManifestEntry(manifest + offset,
+                                              capacity - offset,
+                                              &entry,
+                                              &encodedLength));
+    return offset + encodedLength;
+}
+
+static void testFileManifestValidation(void) {
+    uint8_t manifest[512];
+    LI_CLIPBOARD_FILE_MANIFEST_HEADER header = {
+        .entryCount = 3,
+        .fileCount = 2,
+        .totalFileBytes = 15,
+    };
+    LI_CLIPBOARD_FILE_MANIFEST_HEADER decodedHeader;
+    LI_CLIPBOARD_FILE_MANIFEST_ENTRY decodedEntry;
+    size_t offset = LI_CLIPBOARD_FILE_MANIFEST_HEADER_SIZE;
+
+    assert(LiEncodeClipboardFileManifestHeader(manifest, sizeof(manifest), &header));
+    offset = appendManifestEntry(manifest, sizeof(manifest), offset,
+                                 LI_CLIPBOARD_FILE_TYPE_DIRECTORY, "folder", 0);
+    offset = appendManifestEntry(manifest, sizeof(manifest), offset,
+                                 LI_CLIPBOARD_FILE_TYPE_REGULAR, "folder/one.txt", 10);
+    offset = appendManifestEntry(manifest, sizeof(manifest), offset,
+                                 LI_CLIPBOARD_FILE_TYPE_REGULAR, "two.bin", 5);
+
+    assert(LiIsValidClipboardFileManifest(manifest, offset));
+    assert(LiDecodeClipboardFileManifestHeader(manifest, offset, &decodedHeader));
+    assert(decodedHeader.entryCount == 3);
+    size_t decodeOffset = LI_CLIPBOARD_FILE_MANIFEST_HEADER_SIZE;
+    assert(LiDecodeClipboardFileManifestEntry(manifest, offset, &decodeOffset, &decodedEntry));
+    assert(decodedEntry.type == LI_CLIPBOARD_FILE_TYPE_DIRECTORY);
+    assert(decodedEntry.pathLength == strlen("folder"));
+    assert(memcmp(decodedEntry.path, "folder", decodedEntry.pathLength) == 0);
+
+    manifest[5] = 1;
+    assert(!LiIsValidClipboardFileManifest(manifest, offset));
+    manifest[5] = 0;
+
+    manifest[offset - strlen("two.bin")] = '/';
+    assert(!LiIsValidClipboardFileManifest(manifest, offset));
+}
+
+static void testFileManifestRejectsUnsafePaths(void) {
+    uint8_t encoded[128];
+    size_t encodedLength;
+    const char* unsafePaths[] = {
+        "../secret.txt",
+        "folder\\file.txt",
+        "C:/file.txt",
+        "folder//file.txt",
+        "CON.txt",
+        "file. ",
+    };
+
+    for (size_t i = 0; i < sizeof(unsafePaths) / sizeof(unsafePaths[0]); i++) {
+        LI_CLIPBOARD_FILE_MANIFEST_ENTRY entry = {
+            .type = LI_CLIPBOARD_FILE_TYPE_REGULAR,
+            .pathLength = (uint32_t)strlen(unsafePaths[i]),
+            .size = 1,
+            .path = (const uint8_t*)unsafePaths[i],
+        };
+        assert(!LiEncodeClipboardFileManifestEntry(encoded, sizeof(encoded), &entry, &encodedLength));
+    }
+}
+
 int main(void) {
     testHeaderRoundTrip();
     testBlobReferenceRoundTrip();
     testUtf8Validation();
     testPngHeaderValidation();
+    testFileManifestValidation();
+    testFileManifestRejectsUnsafePaths();
     return 0;
 }

@@ -815,7 +815,8 @@ int LiSendClipboardText(const uint8_t* text, uint32_t length);
 int LiSendClipboardContent(uint8_t mimeType, const uint8_t* data, uint32_t length);
 
 // Announces a Clipboard v2 out-of-band object stored on the host HTTPS
-// clipboard endpoint.
+// clipboard endpoint. The size identifies the referenced object (for file
+// transfers, the manifest), not the sum of the referenced file contents.
 int LiSendClipboardBlobReference(uint8_t targetMimeType,
                                  const char* id,
                                  uint32_t size,

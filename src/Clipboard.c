@@ -134,6 +134,260 @@ bool LiDecodeClipboardBlobReference(const uint8_t* source,
     return true;
 }
 
+static bool isAsciiEqualIgnoreCase(const uint8_t* value, size_t length, const char* expected) {
+    size_t expectedLength = strlen(expected);
+
+    if (length != expectedLength) {
+        return false;
+    }
+    for (size_t i = 0; i < length; i++) {
+        uint8_t character = value[i];
+        if (character >= 'a' && character <= 'z') {
+            character = (uint8_t)(character - ('a' - 'A'));
+        }
+        if (character != (uint8_t)expected[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool isReservedWindowsPathSegment(const uint8_t* segment, size_t length) {
+    size_t baseLength = 0;
+
+    while (baseLength < length && segment[baseLength] != '.') {
+        baseLength++;
+    }
+    if (isAsciiEqualIgnoreCase(segment, baseLength, "CON") ||
+            isAsciiEqualIgnoreCase(segment, baseLength, "PRN") ||
+            isAsciiEqualIgnoreCase(segment, baseLength, "AUX") ||
+            isAsciiEqualIgnoreCase(segment, baseLength, "NUL")) {
+        return true;
+    }
+    if (baseLength == 4 &&
+            ((segment[0] == 'C' || segment[0] == 'c') &&
+             (segment[1] == 'O' || segment[1] == 'o') &&
+             (segment[2] == 'M' || segment[2] == 'm') ||
+             (segment[0] == 'L' || segment[0] == 'l') &&
+             (segment[1] == 'P' || segment[1] == 'p') &&
+             (segment[2] == 'T' || segment[2] == 't')) &&
+            segment[3] >= '1' && segment[3] <= '9') {
+        return true;
+    }
+    return false;
+}
+
+static bool isValidClipboardFilePath(const uint8_t* path, size_t length) {
+    size_t segmentStart = 0;
+
+    if (path == NULL || length == 0 || length > LI_CLIPBOARD_MAX_FILE_PATH_BYTES ||
+            path[0] == '/' || path[length - 1] == '/' ||
+            !LiIsValidUtf8ClipboardText(path, length)) {
+        return false;
+    }
+
+    for (size_t i = 0; i <= length; i++) {
+        if (i != length && path[i] != '/') {
+            const uint8_t character = path[i];
+            if (character < 0x20 || character == 0x7F ||
+                    character == '\\' || character == ':' || character == '*' ||
+                    character == '?' || character == '"' || character == '<' ||
+                    character == '>' || character == '|') {
+                return false;
+            }
+            continue;
+        }
+
+        const size_t segmentLength = i - segmentStart;
+        if (segmentLength == 0 ||
+                (segmentLength == 1 && path[segmentStart] == '.') ||
+                (segmentLength == 2 && path[segmentStart] == '.' && path[segmentStart + 1] == '.') ||
+                path[i - 1] == '.' || path[i - 1] == ' ' ||
+                isReservedWindowsPathSegment(path + segmentStart, segmentLength)) {
+            return false;
+        }
+        segmentStart = i + 1;
+    }
+    return true;
+}
+
+bool LiEncodeClipboardFileManifestHeader(uint8_t* destination,
+                                         size_t destinationLength,
+                                         const LI_CLIPBOARD_FILE_MANIFEST_HEADER* header) {
+    if (destination == NULL || header == NULL ||
+            destinationLength < LI_CLIPBOARD_FILE_MANIFEST_HEADER_SIZE ||
+            header->entryCount == 0 || header->entryCount > LI_CLIPBOARD_MAX_FILE_ENTRIES ||
+            header->fileCount > header->entryCount ||
+            header->totalFileBytes > LI_CLIPBOARD_MAX_FILE_TRANSFER_BYTES) {
+        return false;
+    }
+
+    memcpy(destination, "MLFM", 4);
+    destination[4] = LI_CLIPBOARD_FILE_MANIFEST_VERSION;
+    destination[5] = 0;
+    destination[6] = 0;
+    destination[7] = 0;
+    writeLe32(destination + 8, header->entryCount);
+    writeLe32(destination + 12, header->fileCount);
+    writeLe64(destination + 16, header->totalFileBytes);
+    return true;
+}
+
+bool LiDecodeClipboardFileManifestHeader(const uint8_t* source,
+                                         size_t sourceLength,
+                                         PLI_CLIPBOARD_FILE_MANIFEST_HEADER header) {
+    if (source == NULL || header == NULL ||
+            sourceLength < LI_CLIPBOARD_FILE_MANIFEST_HEADER_SIZE ||
+            memcmp(source, "MLFM", 4) != 0 ||
+            source[4] != LI_CLIPBOARD_FILE_MANIFEST_VERSION ||
+            source[5] != 0 || source[6] != 0 || source[7] != 0) {
+        return false;
+    }
+
+    header->entryCount = readLe32(source + 8);
+    header->fileCount = readLe32(source + 12);
+    header->totalFileBytes = readLe64(source + 16);
+    return header->entryCount != 0 &&
+           header->entryCount <= LI_CLIPBOARD_MAX_FILE_ENTRIES &&
+           header->fileCount <= header->entryCount &&
+           header->totalFileBytes <= LI_CLIPBOARD_MAX_FILE_TRANSFER_BYTES;
+}
+
+bool LiEncodeClipboardFileManifestEntry(uint8_t* destination,
+                                        size_t destinationLength,
+                                        const LI_CLIPBOARD_FILE_MANIFEST_ENTRY* entry,
+                                        size_t* encodedLength) {
+    size_t requiredLength;
+
+    if (destination == NULL || entry == NULL || encodedLength == NULL ||
+            (entry->type != LI_CLIPBOARD_FILE_TYPE_REGULAR &&
+             entry->type != LI_CLIPBOARD_FILE_TYPE_DIRECTORY) ||
+            !isValidClipboardFilePath(entry->path, entry->pathLength) ||
+            (entry->type == LI_CLIPBOARD_FILE_TYPE_DIRECTORY && entry->size != 0) ||
+            entry->size > LI_CLIPBOARD_MAX_FILE_BYTES) {
+        return false;
+    }
+
+    requiredLength = LI_CLIPBOARD_FILE_MANIFEST_ENTRY_HEADER_SIZE + entry->pathLength;
+    if (destinationLength < requiredLength) {
+        return false;
+    }
+
+    destination[0] = entry->type;
+    destination[1] = 0;
+    destination[2] = 0;
+    destination[3] = 0;
+    writeLe32(destination + 4, entry->pathLength);
+    writeLe64(destination + 8, entry->size);
+    writeLe64(destination + 16, entry->modifiedTimeMs);
+    memcpy(destination + LI_CLIPBOARD_FILE_MANIFEST_ENTRY_HEADER_SIZE, entry->path, entry->pathLength);
+    *encodedLength = requiredLength;
+    return true;
+}
+
+bool LiDecodeClipboardFileManifestEntry(const uint8_t* source,
+                                        size_t sourceLength,
+                                        size_t* offset,
+                                        PLI_CLIPBOARD_FILE_MANIFEST_ENTRY entry) {
+    size_t position;
+    uint32_t pathLength;
+
+    if (source == NULL || offset == NULL || entry == NULL ||
+            *offset < LI_CLIPBOARD_FILE_MANIFEST_HEADER_SIZE ||
+            *offset > sourceLength ||
+            sourceLength - *offset < LI_CLIPBOARD_FILE_MANIFEST_ENTRY_HEADER_SIZE) {
+        return false;
+    }
+
+    position = *offset;
+    pathLength = readLe32(source + position + 4);
+    if ((source[position] != LI_CLIPBOARD_FILE_TYPE_REGULAR &&
+         source[position] != LI_CLIPBOARD_FILE_TYPE_DIRECTORY) ||
+            source[position + 1] != 0 || source[position + 2] != 0 || source[position + 3] != 0 ||
+            pathLength == 0 || pathLength > LI_CLIPBOARD_MAX_FILE_PATH_BYTES ||
+            pathLength > sourceLength - position - LI_CLIPBOARD_FILE_MANIFEST_ENTRY_HEADER_SIZE) {
+        return false;
+    }
+
+    entry->type = source[position];
+    entry->pathLength = pathLength;
+    entry->size = readLe64(source + position + 8);
+    entry->modifiedTimeMs = readLe64(source + position + 16);
+    entry->path = source + position + LI_CLIPBOARD_FILE_MANIFEST_ENTRY_HEADER_SIZE;
+    if ((entry->type == LI_CLIPBOARD_FILE_TYPE_DIRECTORY && entry->size != 0) ||
+            entry->size > LI_CLIPBOARD_MAX_FILE_BYTES ||
+            !isValidClipboardFilePath(entry->path, entry->pathLength)) {
+        return false;
+    }
+
+    *offset = position + LI_CLIPBOARD_FILE_MANIFEST_ENTRY_HEADER_SIZE + pathLength;
+    return true;
+}
+
+static bool clipboardFilePathsEqual(const LI_CLIPBOARD_FILE_MANIFEST_ENTRY* first,
+                                    const LI_CLIPBOARD_FILE_MANIFEST_ENTRY* second) {
+    if (first->pathLength != second->pathLength) {
+        return false;
+    }
+    for (uint32_t i = 0; i < first->pathLength; i++) {
+        uint8_t firstCharacter = first->path[i];
+        uint8_t secondCharacter = second->path[i];
+        if (firstCharacter >= 'A' && firstCharacter <= 'Z') {
+            firstCharacter = (uint8_t)(firstCharacter + ('a' - 'A'));
+        }
+        if (secondCharacter >= 'A' && secondCharacter <= 'Z') {
+            secondCharacter = (uint8_t)(secondCharacter + ('a' - 'A'));
+        }
+        if (firstCharacter != secondCharacter) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool LiIsValidClipboardFileManifest(const uint8_t* manifest, size_t length) {
+    LI_CLIPBOARD_FILE_MANIFEST_HEADER header;
+    LI_CLIPBOARD_FILE_MANIFEST_ENTRY current;
+    uint64_t totalFileBytes = 0;
+    uint32_t fileCount = 0;
+    size_t offset = LI_CLIPBOARD_FILE_MANIFEST_HEADER_SIZE;
+
+    if (manifest == NULL || length > LI_CLIPBOARD_MAX_FILE_MANIFEST_BYTES ||
+            !LiDecodeClipboardFileManifestHeader(manifest, length, &header)) {
+        return false;
+    }
+
+    for (uint32_t i = 0; i < header.entryCount; i++) {
+        size_t currentOffset = offset;
+        if (!LiDecodeClipboardFileManifestEntry(manifest, length, &offset, &current)) {
+            return false;
+        }
+
+        if (current.type == LI_CLIPBOARD_FILE_TYPE_REGULAR) {
+            if (totalFileBytes > LI_CLIPBOARD_MAX_FILE_TRANSFER_BYTES - current.size) {
+                return false;
+            }
+            totalFileBytes += current.size;
+            fileCount++;
+        }
+
+        size_t previousOffset = LI_CLIPBOARD_FILE_MANIFEST_HEADER_SIZE;
+        for (uint32_t previousIndex = 0; previousIndex < i; previousIndex++) {
+            LI_CLIPBOARD_FILE_MANIFEST_ENTRY previous;
+            if (!LiDecodeClipboardFileManifestEntry(manifest, currentOffset, &previousOffset, &previous)) {
+                return false;
+            }
+            if (clipboardFilePathsEqual(&current, &previous)) {
+                return false;
+            }
+        }
+    }
+
+    return offset == length &&
+           fileCount == header.fileCount &&
+           totalFileBytes == header.totalFileBytes;
+}
+
 bool LiIsClipboardMimeSupported(uint8_t mimeType, uint8_t capabilities) {
     switch (mimeType) {
     case LI_CLIPBOARD_MIME_TEXT_UTF8:
@@ -142,6 +396,8 @@ bool LiIsClipboardMimeSupported(uint8_t mimeType, uint8_t capabilities) {
         return (capabilities & LI_CLIPBOARD_CAP_PNG) != 0;
     case LI_CLIPBOARD_MIME_BLOB_REFERENCE:
         return (capabilities & LI_CLIPBOARD_CAP_BLOB) != 0;
+    case LI_CLIPBOARD_MIME_FILE_MANIFEST:
+        return (capabilities & LI_CLIPBOARD_CAP_FILES) != 0;
     default:
         return false;
     }
@@ -155,6 +411,8 @@ uint32_t LiGetClipboardMimeSizeLimit(uint8_t mimeType) {
         return LI_CLIPBOARD_MAX_PNG_INLINE_BYTES;
     case LI_CLIPBOARD_MIME_BLOB_REFERENCE:
         return LI_CLIPBOARD_MAX_BLOB_REFERENCE_BYTES;
+    case LI_CLIPBOARD_MIME_FILE_MANIFEST:
+        return LI_CLIPBOARD_MAX_FILE_MANIFEST_BYTES;
     default:
         return 0;
     }

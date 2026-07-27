@@ -1168,11 +1168,18 @@ static void sendClipboardNack(const LI_CLIPBOARD_HEADER* header) {
                          0);
 }
 
-int LiSendClipboardContent(uint8_t mimeType, const uint8_t* data, uint32_t length) {
+int LiSendClipboardContentEx(uint8_t mimeType,
+                             const uint8_t* data,
+                             uint32_t length,
+                             uint64_t* returnedItemId) {
     uint8_t* copy;
     uint32_t sequence;
     uint64_t itemId;
     uint32_t sizeLimit = LiGetClipboardMimeSizeLimit(mimeType);
+
+    if (returnedItemId != NULL) {
+        *returnedItemId = 0;
+    }
 
     if (!clipboardNegotiated ||
             sizeLimit == 0 || length > sizeLimit ||
@@ -1220,19 +1227,32 @@ int LiSendClipboardContent(uint8_t mimeType, const uint8_t* data, uint32_t lengt
     }
     PltUnlockMutex(&clipboardMutex);
 
-    return sendClipboardControl(LI_CLIPBOARD_OP_ANNOUNCE,
-                                mimeType,
-                                0,
-                                sequence,
-                                clipboardOriginId,
-                                itemId,
-                                length) ? 0 : -1;
+    if (!sendClipboardControl(LI_CLIPBOARD_OP_ANNOUNCE,
+                              mimeType,
+                              0,
+                              sequence,
+                              clipboardOriginId,
+                              itemId,
+                              length)) {
+        return -1;
+    }
+
+    if (returnedItemId != NULL) {
+        *returnedItemId = itemId;
+    }
+    return 0;
 }
 
-int LiSendClipboardBlobReference(uint8_t targetMimeType,
-                                 const char* id,
-                                 uint32_t size,
-                                 const uint8_t sha256[LI_CLIPBOARD_SHA256_BYTES]) {
+int LiSendClipboardContent(uint8_t mimeType, const uint8_t* data, uint32_t length) {
+    return LiSendClipboardContentEx(mimeType, data, length, NULL);
+}
+
+int LiSendClipboardBlobReferenceEx(
+    uint8_t targetMimeType,
+    const char* id,
+    uint32_t size,
+    const uint8_t sha256[LI_CLIPBOARD_SHA256_BYTES],
+    uint64_t* itemId) {
     LI_CLIPBOARD_BLOB_REFERENCE reference;
     uint8_t encoded[LI_CLIPBOARD_MAX_BLOB_REFERENCE_BYTES];
     size_t encodedLength;
@@ -1256,9 +1276,22 @@ int LiSendClipboardBlobReference(uint8_t targetMimeType,
         return -1;
     }
 
-    return LiSendClipboardContent(LI_CLIPBOARD_MIME_BLOB_REFERENCE,
-                                  encoded,
-                                  (uint32_t)encodedLength);
+    return LiSendClipboardContentEx(LI_CLIPBOARD_MIME_BLOB_REFERENCE,
+                                    encoded,
+                                    (uint32_t)encodedLength,
+                                    itemId);
+}
+
+int LiSendClipboardBlobReference(uint8_t targetMimeType,
+                                 const char* id,
+                                 uint32_t size,
+                                 const uint8_t sha256[LI_CLIPBOARD_SHA256_BYTES]) {
+    return LiSendClipboardBlobReferenceEx(
+        targetMimeType,
+        id,
+        size,
+        sha256,
+        NULL);
 }
 
 int LiReleaseClipboardContent(void) {
@@ -1502,6 +1535,17 @@ static void handleClipboardMessage(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int pack
 
     case LI_CLIPBOARD_OP_ACK:
     case LI_CLIPBOARD_OP_NACK:
+        if (clipboardNegotiated &&
+                header.originId == clipboardOriginId &&
+                header.itemId != 0) {
+            SS_CLIPBOARD_STATUS status = {
+                .mimeType = header.mimeType,
+                .accepted = header.op == LI_CLIPBOARD_OP_ACK,
+                .originId = header.originId,
+                .itemId = header.itemId,
+            };
+            ListenerCallbacks.clipboardStatus(&status);
+        }
         break;
 
     default:

@@ -544,6 +544,18 @@ typedef void(*ConnListenerClipboardContent)(PSS_CLIPBOARD_CONTENT content);
 // handshake completes.
 typedef void(*ConnListenerClipboardReady)(uint8_t capabilities);
 
+typedef struct _SS_CLIPBOARD_STATUS {
+    uint8_t mimeType;
+    uint8_t accepted;
+    uint8_t reserved[6];
+    uint64_t originId;
+    uint64_t itemId;
+} SS_CLIPBOARD_STATUS, *PSS_CLIPBOARD_STATUS;
+
+// This callback reports whether the host accepted a locally announced
+// clipboard item. The item ID matches the value returned by the Ex send APIs.
+typedef void(*ConnListenerClipboardStatus)(PSS_CLIPBOARD_STATUS status);
+
 typedef struct _CONNECTION_LISTENER_CALLBACKS {
     ConnListenerStageStarting stageStarting;
     ConnListenerStageComplete stageComplete;
@@ -561,6 +573,7 @@ typedef struct _CONNECTION_LISTENER_CALLBACKS {
     ConnListenerNativeCursor nativeCursor;
     ConnListenerClipboardContent clipboardContent;
     ConnListenerClipboardReady clipboardReady;
+    ConnListenerClipboardStatus clipboardStatus;
 } CONNECTION_LISTENER_CALLBACKS, *PCONNECTION_LISTENER_CALLBACKS;
 
 // Use this function to zero the connection callbacks when allocated on the stack or heap
@@ -800,6 +813,13 @@ int LiSendUtf8TextEvent(const char *text, unsigned int length);
 // requests it or a newer item supersedes it.
 int LiSendClipboardContent(uint8_t mimeType, const uint8_t* data, uint32_t length);
 
+// Equivalent to LiSendClipboardContent(), additionally returning the item ID
+// used to correlate the host acknowledgement callback.
+int LiSendClipboardContentEx(uint8_t mimeType,
+                             const uint8_t* data,
+                             uint32_t length,
+                             uint64_t* itemId);
+
 // Announces an out-of-band object stored on the host HTTPS
 // clipboard endpoint. The size identifies the referenced object (for file
 // transfers, the manifest), not the sum of the referenced file contents.
@@ -807,6 +827,15 @@ int LiSendClipboardBlobReference(uint8_t targetMimeType,
                                  const char* id,
                                  uint32_t size,
                                  const uint8_t sha256[LI_CLIPBOARD_SHA256_BYTES]);
+
+// Equivalent to LiSendClipboardBlobReference(), additionally returning the
+// item ID used to correlate the host acknowledgement callback.
+int LiSendClipboardBlobReferenceEx(
+    uint8_t targetMimeType,
+    const char* id,
+    uint32_t size,
+    const uint8_t sha256[LI_CLIPBOARD_SHA256_BYTES],
+    uint64_t* itemId);
 
 // Releases the current clipboard item without replacing it.
 int LiReleaseClipboardContent(void);

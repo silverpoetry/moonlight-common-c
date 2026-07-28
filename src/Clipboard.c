@@ -82,8 +82,7 @@ bool LiEncodeClipboardBlobReference(uint8_t* destination,
     if (destination == NULL || reference == NULL || encodedLength == NULL ||
             reference->idLength == 0 || reference->idLength > LI_CLIPBOARD_BLOB_ID_MAX_BYTES ||
             (reference->targetMimeType != LI_CLIPBOARD_MIME_TEXT_UTF8 &&
-             reference->targetMimeType != LI_CLIPBOARD_MIME_PNG &&
-             reference->targetMimeType != LI_CLIPBOARD_MIME_FILE_MANIFEST) ||
+             reference->targetMimeType != LI_CLIPBOARD_MIME_PNG) ||
             reference->size == 0) {
         return false;
     }
@@ -112,8 +111,7 @@ bool LiDecodeClipboardBlobReference(const uint8_t* source,
     if (source == NULL || reference == NULL || sourceLength < LI_CLIPBOARD_BLOB_REFERENCE_HEADER_SIZE ||
             source[0] != LI_CLIPBOARD_BLOB_REFERENCE_VERSION ||
             (source[1] != LI_CLIPBOARD_MIME_TEXT_UTF8 &&
-             source[1] != LI_CLIPBOARD_MIME_PNG &&
-             source[1] != LI_CLIPBOARD_MIME_FILE_MANIFEST) ||
+             source[1] != LI_CLIPBOARD_MIME_PNG) ||
             source[3] != 0) {
         return false;
     }
@@ -134,6 +132,64 @@ bool LiDecodeClipboardBlobReference(const uint8_t* source,
     memcpy(reference->sha256, source + 8, LI_CLIPBOARD_SHA256_BYTES);
     memcpy(reference->id, source + LI_CLIPBOARD_BLOB_REFERENCE_HEADER_SIZE, idLength);
     reference->id[idLength] = '\0';
+    return true;
+}
+
+bool LiEncodeClipboardFileOffer(uint8_t* destination,
+                                size_t destinationLength,
+                                const LI_CLIPBOARD_FILE_OFFER* offer,
+                                size_t* encodedLength) {
+    size_t requiredLength;
+
+    if (destination == NULL || offer == NULL || encodedLength == NULL ||
+            offer->idLength == 0 ||
+            offer->idLength > LI_CLIPBOARD_FILE_OFFER_ID_MAX_BYTES) {
+        return false;
+    }
+
+    requiredLength = LI_CLIPBOARD_FILE_OFFER_HEADER_SIZE + offer->idLength;
+    if (destinationLength < requiredLength) {
+        return false;
+    }
+
+    memcpy(destination, "MLFO", 4);
+    destination[4] = LI_CLIPBOARD_FILE_OFFER_VERSION;
+    destination[5] = offer->idLength;
+    destination[6] = 0;
+    destination[7] = 0;
+    memcpy(destination + LI_CLIPBOARD_FILE_OFFER_HEADER_SIZE,
+           offer->id,
+           offer->idLength);
+    *encodedLength = requiredLength;
+    return true;
+}
+
+bool LiDecodeClipboardFileOffer(const uint8_t* source,
+                                size_t sourceLength,
+                                PLI_CLIPBOARD_FILE_OFFER offer) {
+    uint8_t idLength;
+
+    if (source == NULL || offer == NULL ||
+            sourceLength < LI_CLIPBOARD_FILE_OFFER_HEADER_SIZE ||
+            memcmp(source, "MLFO", 4) != 0 ||
+            source[4] != LI_CLIPBOARD_FILE_OFFER_VERSION ||
+            source[6] != 0 || source[7] != 0) {
+        return false;
+    }
+
+    idLength = source[5];
+    if (idLength == 0 ||
+            idLength > LI_CLIPBOARD_FILE_OFFER_ID_MAX_BYTES ||
+            sourceLength != LI_CLIPBOARD_FILE_OFFER_HEADER_SIZE + idLength) {
+        return false;
+    }
+
+    memset(offer, 0, sizeof(*offer));
+    offer->idLength = idLength;
+    memcpy(offer->id,
+           source + LI_CLIPBOARD_FILE_OFFER_HEADER_SIZE,
+           idLength);
+    offer->id[idLength] = '\0';
     return true;
 }
 
@@ -433,7 +489,7 @@ bool LiIsClipboardMimeSupported(uint8_t mimeType, uint8_t capabilities) {
         return (capabilities & LI_CLIPBOARD_CAP_PNG) != 0;
     case LI_CLIPBOARD_MIME_BLOB_REFERENCE:
         return (capabilities & LI_CLIPBOARD_CAP_BLOB) != 0;
-    case LI_CLIPBOARD_MIME_FILE_MANIFEST:
+    case LI_CLIPBOARD_MIME_FILE_OFFER:
         return (capabilities &
                 (LI_CLIPBOARD_CAP_FILES | LI_CLIPBOARD_CAP_FILE_STREAMS)) ==
                (LI_CLIPBOARD_CAP_FILES | LI_CLIPBOARD_CAP_FILE_STREAMS);
@@ -450,8 +506,8 @@ uint32_t LiGetClipboardMimeSizeLimit(uint8_t mimeType) {
         return LI_CLIPBOARD_MAX_PNG_INLINE_BYTES;
     case LI_CLIPBOARD_MIME_BLOB_REFERENCE:
         return LI_CLIPBOARD_MAX_BLOB_REFERENCE_BYTES;
-    case LI_CLIPBOARD_MIME_FILE_MANIFEST:
-        return LI_CLIPBOARD_MAX_FILE_MANIFEST_BYTES;
+    case LI_CLIPBOARD_MIME_FILE_OFFER:
+        return LI_CLIPBOARD_MAX_FILE_OFFER_BYTES;
     default:
         return 0;
     }

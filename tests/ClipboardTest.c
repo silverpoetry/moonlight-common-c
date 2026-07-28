@@ -59,10 +59,29 @@ static void testBlobReferenceRoundTrip(void) {
     assert(strcmp(output.id, input.id) == 0);
     assert(memcmp(output.sha256, input.sha256, sizeof(input.sha256)) == 0);
 
-    input.targetMimeType = LI_CLIPBOARD_MIME_FILE_MANIFEST;
-    assert(LiEncodeClipboardBlobReference(encoded, sizeof(encoded), &input, &encodedLength));
-    assert(LiDecodeClipboardBlobReference(encoded, encodedLength, &output));
-    assert(output.targetMimeType == LI_CLIPBOARD_MIME_FILE_MANIFEST);
+}
+
+static void testFileOfferRoundTrip(void) {
+    LI_CLIPBOARD_FILE_OFFER input = {
+        .idLength = 36,
+        .id = "01234567-89ab-4cde-8fab-0123456789ab",
+    };
+    LI_CLIPBOARD_FILE_OFFER output;
+    uint8_t encoded[LI_CLIPBOARD_MAX_FILE_OFFER_BYTES];
+    size_t encodedLength = 0;
+
+    assert(LiEncodeClipboardFileOffer(encoded,
+                                      sizeof(encoded),
+                                      &input,
+                                      &encodedLength));
+    assert(encodedLength ==
+           LI_CLIPBOARD_FILE_OFFER_HEADER_SIZE + input.idLength);
+    assert(LiDecodeClipboardFileOffer(encoded, encodedLength, &output));
+    assert(output.idLength == input.idLength);
+    assert(strcmp(output.id, input.id) == 0);
+
+    encoded[6] = 1;
+    assert(!LiDecodeClipboardFileOffer(encoded, encodedLength, &output));
 }
 
 static void testUtf8Validation(void) {
@@ -189,18 +208,19 @@ static void testFileManifestRejectsUnsafePaths(void) {
 }
 
 static void testFileStreamingCapability(void) {
-    assert(!LiIsClipboardMimeSupported(LI_CLIPBOARD_MIME_FILE_MANIFEST,
+    assert(!LiIsClipboardMimeSupported(LI_CLIPBOARD_MIME_FILE_OFFER,
                                        LI_CLIPBOARD_CAP_FILES));
-    assert(!LiIsClipboardMimeSupported(LI_CLIPBOARD_MIME_FILE_MANIFEST,
+    assert(!LiIsClipboardMimeSupported(LI_CLIPBOARD_MIME_FILE_OFFER,
                                        LI_CLIPBOARD_CAP_FILE_STREAMS));
     assert(LiIsClipboardMimeSupported(
-        LI_CLIPBOARD_MIME_FILE_MANIFEST,
+        LI_CLIPBOARD_MIME_FILE_OFFER,
         LI_CLIPBOARD_CAP_FILES | LI_CLIPBOARD_CAP_FILE_STREAMS));
 }
 
 int main(void) {
     testHeaderRoundTrip();
     testBlobReferenceRoundTrip();
+    testFileOfferRoundTrip();
     testUtf8Validation();
     testPngHeaderValidation();
     testFileManifestValidation();

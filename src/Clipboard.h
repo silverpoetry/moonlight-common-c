@@ -10,12 +10,13 @@ extern "C" {
 
 #define LI_CLIPBOARD_PTYPE 0x3001
 
-#define LI_CLIPBOARD_VERSION 2
+#define LI_CLIPBOARD_VERSION 3
 #define LI_CLIPBOARD_HEADER_SIZE 36
 
 #define LI_CLIPBOARD_MAX_TEXT_BYTES (1024U * 1024U)
 #define LI_CLIPBOARD_MAX_PNG_INLINE_BYTES (1024U * 1024U)
 #define LI_CLIPBOARD_MAX_BLOB_REFERENCE_BYTES 128U
+#define LI_CLIPBOARD_MAX_FILE_OFFER_BYTES 72U
 #define LI_CLIPBOARD_MAX_CHUNK_BYTES (16U * 1024U)
 #define LI_CLIPBOARD_MAX_IMAGE_PIXELS (32U * 1024U * 1024U)
 #define LI_CLIPBOARD_MAX_FILE_MANIFEST_BYTES (1024U * 1024U)
@@ -37,7 +38,7 @@ extern "C" {
 #define LI_CLIPBOARD_MIME_TEXT_UTF8 0x01
 #define LI_CLIPBOARD_MIME_PNG 0x02
 #define LI_CLIPBOARD_MIME_BLOB_REFERENCE 0x03
-#define LI_CLIPBOARD_MIME_FILE_MANIFEST 0x04
+#define LI_CLIPBOARD_MIME_FILE_OFFER 0x05
 
 #define LI_CLIPBOARD_CAP_CAN_SEND 0x01
 #define LI_CLIPBOARD_CAP_CAN_RECEIVE 0x02
@@ -51,6 +52,10 @@ extern "C" {
 #define LI_CLIPBOARD_BLOB_REFERENCE_HEADER_SIZE 40
 #define LI_CLIPBOARD_BLOB_ID_MAX_BYTES 64
 #define LI_CLIPBOARD_SHA256_BYTES 32
+
+#define LI_CLIPBOARD_FILE_OFFER_VERSION 1
+#define LI_CLIPBOARD_FILE_OFFER_HEADER_SIZE 8
+#define LI_CLIPBOARD_FILE_OFFER_ID_MAX_BYTES 64
 
 #define LI_CLIPBOARD_FILE_MANIFEST_VERSION 1
 #define LI_CLIPBOARD_FILE_MANIFEST_HEADER_SIZE 24
@@ -78,6 +83,11 @@ typedef struct _LI_CLIPBOARD_BLOB_REFERENCE {
     uint8_t idLength;
     char id[LI_CLIPBOARD_BLOB_ID_MAX_BYTES + 1];
 } LI_CLIPBOARD_BLOB_REFERENCE, *PLI_CLIPBOARD_BLOB_REFERENCE;
+
+typedef struct _LI_CLIPBOARD_FILE_OFFER {
+    uint8_t idLength;
+    char id[LI_CLIPBOARD_FILE_OFFER_ID_MAX_BYTES + 1];
+} LI_CLIPBOARD_FILE_OFFER, *PLI_CLIPBOARD_FILE_OFFER;
 
 typedef struct _LI_CLIPBOARD_FILE_MANIFEST_HEADER {
     uint32_t entryCount;
@@ -109,6 +119,15 @@ bool LiEncodeClipboardBlobReference(uint8_t* destination,
 bool LiDecodeClipboardBlobReference(const uint8_t* source,
                                     size_t sourceLength,
                                     PLI_CLIPBOARD_BLOB_REFERENCE reference);
+
+bool LiEncodeClipboardFileOffer(uint8_t* destination,
+                                size_t destinationLength,
+                                const LI_CLIPBOARD_FILE_OFFER* offer,
+                                size_t* encodedLength);
+
+bool LiDecodeClipboardFileOffer(const uint8_t* source,
+                                size_t sourceLength,
+                                PLI_CLIPBOARD_FILE_OFFER offer);
 
 bool LiEncodeClipboardFileManifestHeader(uint8_t* destination,
                                          size_t destinationLength,

@@ -1202,6 +1202,12 @@ int LiSendClipboardContentEx(uint8_t mimeType,
             return -1;
         }
     }
+    if (mimeType == LI_CLIPBOARD_MIME_FILE_OFFER) {
+        LI_CLIPBOARD_FILE_OFFER offer;
+        if (!LiDecodeClipboardFileOffer(data, length, &offer)) {
+            return -1;
+        }
+    }
 
     copy = malloc(length == 0 ? 1 : length);
     if (copy == NULL) {
@@ -1504,6 +1510,10 @@ static void handleClipboardMessage(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int pack
             else if (content.mimeType == LI_CLIPBOARD_MIME_BLOB_REFERENCE) {
                 LI_CLIPBOARD_BLOB_REFERENCE reference;
                 valid = LiDecodeClipboardBlobReference(content.data, content.length, &reference);
+            }
+            else if (content.mimeType == LI_CLIPBOARD_MIME_FILE_OFFER) {
+                LI_CLIPBOARD_FILE_OFFER offer;
+                valid = LiDecodeClipboardFileOffer(content.data, content.length, &offer);
             }
 
             if (valid) {

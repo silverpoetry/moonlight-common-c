@@ -89,6 +89,9 @@ static LI_CLIPBOARD_HEADER validMessage(uint8_t op) {
     }
     else if (op == LI_CLIPBOARD_OP_ACK || op == LI_CLIPBOARD_OP_NACK) {
         header.totalLength = 0;
+        if (op == LI_CLIPBOARD_OP_NACK) {
+            header.flags = LI_CLIPBOARD_NACK_INVALID_DATA;
+        }
     }
     else if (op == LI_CLIPBOARD_OP_RELEASE) {
         header.mimeType = LI_CLIPBOARD_MIME_NONE;
@@ -116,6 +119,28 @@ static void testCapabilityValidation(void) {
         LI_CLIPBOARD_CAP_FILE_STREAMS | LI_CLIPBOARD_CAP_BLOB));
     assert(!LiIsValidClipboardCapabilities(
         LI_CLIPBOARD_CAP_CAN_SEND | LI_CLIPBOARD_CAP_TEXT | 0x80));
+}
+
+static void testNackClassification(void) {
+    assert(LiIsValidClipboardNackReason(
+        LI_CLIPBOARD_NACK_INVALID_DATA));
+    assert(LiIsValidClipboardNackReason(
+        LI_CLIPBOARD_NACK_UNSUPPORTED));
+    assert(LiIsValidClipboardNackReason(
+        LI_CLIPBOARD_NACK_SOURCE_UNAVAILABLE));
+    assert(LiIsValidClipboardNackReason(LI_CLIPBOARD_NACK_BUSY));
+    assert(LiIsValidClipboardNackReason(LI_CLIPBOARD_NACK_TEMPORARY));
+    assert(LiIsValidClipboardNackReason(LI_CLIPBOARD_NACK_CANCELLED));
+    assert(!LiIsValidClipboardNackReason(0));
+    assert(!LiIsValidClipboardNackReason(0x80));
+
+    assert(LiIsClipboardNackRetryable(LI_CLIPBOARD_NACK_BUSY));
+    assert(LiIsClipboardNackRetryable(LI_CLIPBOARD_NACK_TEMPORARY));
+    assert(!LiIsClipboardNackRetryable(
+        LI_CLIPBOARD_NACK_INVALID_DATA));
+    assert(!LiIsClipboardNackRetryable(
+        LI_CLIPBOARD_NACK_SOURCE_UNAVAILABLE));
+    assert(!LiIsClipboardNackRetryable(LI_CLIPBOARD_NACK_CANCELLED));
 }
 
 static void testMessageValidation(void) {
@@ -148,6 +173,12 @@ static void testMessageValidation(void) {
 
     header = validMessage(LI_CLIPBOARD_OP_RELEASE);
     header.itemId = 0;
+    assert(!LiIsValidClipboardMessage(&header, LI_CLIPBOARD_HEADER_SIZE));
+
+    header = validMessage(LI_CLIPBOARD_OP_NACK);
+    header.flags = 0;
+    assert(!LiIsValidClipboardMessage(&header, LI_CLIPBOARD_HEADER_SIZE));
+    header.flags = 0x80;
     assert(!LiIsValidClipboardMessage(&header, LI_CLIPBOARD_HEADER_SIZE));
 }
 
@@ -343,6 +374,7 @@ static void testFileStreamingCapability(void) {
 int main(void) {
     testHeaderRoundTrip();
     testCapabilityValidation();
+    testNackClassification();
     testMessageValidation();
     testBlobReferenceRoundTrip();
     testFileOfferRoundTrip();

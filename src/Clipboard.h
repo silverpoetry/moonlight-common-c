@@ -10,7 +10,7 @@ extern "C" {
 
 #define LI_CLIPBOARD_PTYPE 0x3001
 
-#define LI_CLIPBOARD_VERSION 3
+#define LI_CLIPBOARD_VERSION 4
 #define LI_CLIPBOARD_HEADER_SIZE 36
 
 #define LI_CLIPBOARD_MAX_TEXT_BYTES (1024U * 1024U)
@@ -33,6 +33,13 @@ extern "C" {
 #define LI_CLIPBOARD_OP_ACK 0x05
 #define LI_CLIPBOARD_OP_NACK 0x06
 #define LI_CLIPBOARD_OP_RELEASE 0x07
+
+#define LI_CLIPBOARD_NACK_INVALID_DATA 0x01
+#define LI_CLIPBOARD_NACK_UNSUPPORTED 0x02
+#define LI_CLIPBOARD_NACK_SOURCE_UNAVAILABLE 0x03
+#define LI_CLIPBOARD_NACK_BUSY 0x04
+#define LI_CLIPBOARD_NACK_TEMPORARY 0x05
+#define LI_CLIPBOARD_NACK_CANCELLED 0x06
 
 #define LI_CLIPBOARD_MIME_NONE 0x00
 #define LI_CLIPBOARD_MIME_TEXT_UTF8 0x01
@@ -126,6 +133,9 @@ bool LiIsValidClipboardCapabilities(uint8_t capabilities);
 // capability checks remain the caller's responsibility.
 bool LiIsValidClipboardMessage(const LI_CLIPBOARD_HEADER* header,
                                size_t payloadLength);
+
+bool LiIsValidClipboardNackReason(uint8_t reason);
+bool LiIsClipboardNackRetryable(uint8_t reason);
 
 bool LiEncodeClipboardBlobReference(uint8_t* destination,
                                     size_t destinationLength,

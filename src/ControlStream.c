@@ -1160,10 +1160,11 @@ static bool sendClipboardHello(void) {
                                 0);
 }
 
-static void sendClipboardNack(const LI_CLIPBOARD_HEADER* header) {
+static void sendClipboardNack(const LI_CLIPBOARD_HEADER* header,
+                              uint8_t reason) {
     sendClipboardControl(LI_CLIPBOARD_OP_NACK,
                          header->mimeType,
-                         0,
+                         reason,
                          header->sequence,
                          header->originId,
                          header->itemId,
@@ -1372,7 +1373,7 @@ static void handleClipboardMessage(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int pack
                 header.chunkLength != 0 ||
                 !LiIsClipboardMimeSupported(header.mimeType, clipboardLocalCapabilities) ||
                 !LiIsClipboardMimeSupported(header.mimeType, clipboardHostCapabilities)) {
-            sendClipboardNack(&header);
+            sendClipboardNack(&header, LI_CLIPBOARD_NACK_UNSUPPORTED);
             return;
         }
 
@@ -1421,8 +1422,14 @@ static void handleClipboardMessage(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int pack
             }
             PltUnlockMutex(&clipboardMutex);
 
-            if (!matches || dataCopy == NULL ||
-                    header.totalLength != dataLength ||
+            if (!matches || header.totalLength != dataLength) {
+                free(dataCopy);
+                sendClipboardNack(
+                    &header,
+                    LI_CLIPBOARD_NACK_SOURCE_UNAVAILABLE);
+                return;
+            }
+            if (dataCopy == NULL ||
                     !sendClipboardData(header.sequence,
                                        header.mimeType,
                                        header.originId,
@@ -1430,7 +1437,7 @@ static void handleClipboardMessage(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int pack
                                        dataCopy,
                                        dataLength)) {
                 free(dataCopy);
-                sendClipboardNack(&header);
+                sendClipboardNack(&header, LI_CLIPBOARD_NACK_TEMPORARY);
                 return;
             }
             free(dataCopy);
@@ -1445,7 +1452,7 @@ static void handleClipboardMessage(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int pack
                 sizeLimit == 0 ||
                 header.totalLength > sizeLimit) {
             resetClipboardReassembly();
-            sendClipboardNack(&header);
+            sendClipboardNack(&header, LI_CLIPBOARD_NACK_INVALID_DATA);
             return;
         }
 
@@ -1453,7 +1460,7 @@ static void handleClipboardMessage(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int pack
             resetClipboardReassembly();
             clipboardRecvBuffer = malloc(header.totalLength == 0 ? 1 : header.totalLength);
             if (clipboardRecvBuffer == NULL) {
-                sendClipboardNack(&header);
+                sendClipboardNack(&header, LI_CLIPBOARD_NACK_BUSY);
                 return;
             }
             clipboardRecvSequence = header.sequence;
@@ -1471,7 +1478,7 @@ static void handleClipboardMessage(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int pack
                 clipboardRecvOffset != header.chunkOffset ||
                 clipboardRecvBuffer == NULL) {
             resetClipboardReassembly();
-            sendClipboardNack(&header);
+            sendClipboardNack(&header, LI_CLIPBOARD_NACK_INVALID_DATA);
             return;
         }
 
@@ -1514,7 +1521,7 @@ static void handleClipboardMessage(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int pack
             clipboardRequestedMimeType = LI_CLIPBOARD_MIME_NONE;
             sendClipboardControl(valid ? LI_CLIPBOARD_OP_ACK : LI_CLIPBOARD_OP_NACK,
                                  header.mimeType,
-                                 0,
+                                 valid ? 0 : LI_CLIPBOARD_NACK_INVALID_DATA,
                                  header.sequence,
                                  header.originId,
                                  header.itemId,
@@ -1540,6 +1547,10 @@ static void handleClipboardMessage(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int pack
             SS_CLIPBOARD_STATUS status = {
                 .mimeType = header.mimeType,
                 .accepted = header.op == LI_CLIPBOARD_OP_ACK,
+                .reason = header.op == LI_CLIPBOARD_OP_NACK ?
+                              header.flags : 0,
+                .retryable = header.op == LI_CLIPBOARD_OP_NACK &&
+                             LiIsClipboardNackRetryable(header.flags),
                 .originId = header.originId,
                 .itemId = header.itemId,
             };
@@ -1548,7 +1559,7 @@ static void handleClipboardMessage(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int pack
         break;
 
     default:
-        sendClipboardNack(&header);
+        sendClipboardNack(&header, LI_CLIPBOARD_NACK_UNSUPPORTED);
         break;
     }
 }

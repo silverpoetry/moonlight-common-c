@@ -547,7 +547,9 @@ typedef void(*ConnListenerClipboardReady)(uint8_t capabilities);
 typedef struct _SS_CLIPBOARD_STATUS {
     uint8_t mimeType;
     uint8_t accepted;
-    uint8_t reserved[6];
+    uint8_t reason;
+    uint8_t retryable;
+    uint8_t reserved[4];
     uint64_t originId;
     uint64_t itemId;
 } SS_CLIPBOARD_STATUS, *PSS_CLIPBOARD_STATUS;

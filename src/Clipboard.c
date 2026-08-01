@@ -91,6 +91,25 @@ bool LiIsValidClipboardCapabilities(uint8_t capabilities) {
     return true;
 }
 
+bool LiIsValidClipboardNackReason(uint8_t reason) {
+    switch (reason) {
+    case LI_CLIPBOARD_NACK_INVALID_DATA:
+    case LI_CLIPBOARD_NACK_UNSUPPORTED:
+    case LI_CLIPBOARD_NACK_SOURCE_UNAVAILABLE:
+    case LI_CLIPBOARD_NACK_BUSY:
+    case LI_CLIPBOARD_NACK_TEMPORARY:
+    case LI_CLIPBOARD_NACK_CANCELLED:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool LiIsClipboardNackRetryable(uint8_t reason) {
+    return reason == LI_CLIPBOARD_NACK_BUSY ||
+           reason == LI_CLIPBOARD_NACK_TEMPORARY;
+}
+
 bool LiIsValidClipboardMessage(const LI_CLIPBOARD_HEADER* header,
                                size_t payloadLength) {
     uint32_t sizeLimit;
@@ -127,9 +146,15 @@ bool LiIsValidClipboardMessage(const LI_CLIPBOARD_HEADER* header,
                header->totalLength <= sizeLimit;
 
     case LI_CLIPBOARD_OP_ACK:
-    case LI_CLIPBOARD_OP_NACK:
         return header->flags == 0 && header->originId != 0 &&
                header->itemId != 0 &&
+               LiGetClipboardMimeSizeLimit(header->mimeType) != 0 &&
+               header->totalLength == 0 && header->chunkOffset == 0 &&
+               header->chunkLength == 0;
+
+    case LI_CLIPBOARD_OP_NACK:
+        return LiIsValidClipboardNackReason(header->flags) &&
+               header->originId != 0 && header->itemId != 0 &&
                LiGetClipboardMimeSizeLimit(header->mimeType) != 0 &&
                header->totalLength == 0 && header->chunkOffset == 0 &&
                header->chunkLength == 0;

@@ -3,6 +3,35 @@
 #include <assert.h>
 #include <string.h>
 
+static const char canonicalManifestHex[] =
+#include "fixtures/ClipboardManifestV1.inc"
+;
+
+static uint8_t hexNibble(char value) {
+    if (value >= '0' && value <= '9') {
+        return (uint8_t)(value - '0');
+    }
+    if (value >= 'a' && value <= 'f') {
+        return (uint8_t)(value - 'a' + 10);
+    }
+    assert(false);
+    return 0;
+}
+
+static size_t decodeHex(const char* source,
+                        uint8_t* destination,
+                        size_t destinationLength) {
+    size_t sourceLength = strlen(source);
+    assert(sourceLength % 2 == 0);
+    assert(sourceLength / 2 <= destinationLength);
+    for (size_t index = 0; index < sourceLength / 2; index++) {
+        destination[index] = (uint8_t)(
+            (hexNibble(source[index * 2]) << 4) |
+            hexNibble(source[index * 2 + 1]));
+    }
+    return sourceLength / 2;
+}
+
 static void testHeaderRoundTrip(void) {
     LI_CLIPBOARD_HEADER input = {
         .version = LI_CLIPBOARD_VERSION,
@@ -225,6 +254,7 @@ static size_t appendManifestEntry(uint8_t* manifest,
 
 static void testFileManifestValidation(void) {
     uint8_t manifest[512];
+    uint8_t canonicalManifest[512];
     LI_CLIPBOARD_FILE_MANIFEST_HEADER header = {
         .entryCount = 3,
         .fileCount = 2,
@@ -243,6 +273,11 @@ static void testFileManifestValidation(void) {
                                  LI_CLIPBOARD_FILE_TYPE_REGULAR, "two.bin", 5);
 
     assert(LiIsValidClipboardFileManifest(manifest, offset));
+    size_t canonicalLength = decodeHex(canonicalManifestHex,
+                                       canonicalManifest,
+                                       sizeof(canonicalManifest));
+    assert(offset == canonicalLength);
+    assert(memcmp(manifest, canonicalManifest, canonicalLength) == 0);
     assert(LiDecodeClipboardFileManifestHeader(manifest, offset, &decodedHeader));
     assert(decodedHeader.entryCount == 3);
     size_t decodeOffset = LI_CLIPBOARD_FILE_MANIFEST_HEADER_SIZE;

@@ -35,6 +35,93 @@ static void testHeaderRoundTrip(void) {
     assert(!LiDecodeClipboardHeader(encoded, sizeof(encoded) - 1, &output));
 }
 
+static LI_CLIPBOARD_HEADER validMessage(uint8_t op) {
+    LI_CLIPBOARD_HEADER header = {
+        .version = LI_CLIPBOARD_VERSION,
+        .op = op,
+        .mimeType = LI_CLIPBOARD_MIME_TEXT_UTF8,
+        .flags = 0,
+        .sequence = 1,
+        .originId = 2,
+        .itemId = 3,
+        .totalLength = 4,
+        .chunkOffset = 0,
+        .chunkLength = 0,
+    };
+
+    if (op == LI_CLIPBOARD_OP_HELLO) {
+        header.mimeType = LI_CLIPBOARD_MIME_NONE;
+        header.flags = LI_CLIPBOARD_CAP_CAN_SEND | LI_CLIPBOARD_CAP_TEXT;
+        header.itemId = 0;
+        header.totalLength = 0;
+    }
+    else if (op == LI_CLIPBOARD_OP_DATA) {
+        header.chunkLength = 4;
+    }
+    else if (op == LI_CLIPBOARD_OP_ACK || op == LI_CLIPBOARD_OP_NACK) {
+        header.totalLength = 0;
+    }
+    else if (op == LI_CLIPBOARD_OP_RELEASE) {
+        header.mimeType = LI_CLIPBOARD_MIME_NONE;
+        header.totalLength = 0;
+    }
+    return header;
+}
+
+static void testCapabilityValidation(void) {
+    assert(LiIsValidClipboardCapabilities(
+        LI_CLIPBOARD_CAP_CAN_SEND | LI_CLIPBOARD_CAP_TEXT));
+    assert(LiIsValidClipboardCapabilities(
+        LI_CLIPBOARD_CAP_CAN_RECEIVE | LI_CLIPBOARD_CAP_TEXT |
+        LI_CLIPBOARD_CAP_BLOB));
+    assert(LiIsValidClipboardCapabilities(
+        LI_CLIPBOARD_CAP_CAN_SEND | LI_CLIPBOARD_CAP_FILES |
+        LI_CLIPBOARD_CAP_FILE_STREAMS));
+    assert(!LiIsValidClipboardCapabilities(LI_CLIPBOARD_CAP_TEXT));
+    assert(!LiIsValidClipboardCapabilities(
+        LI_CLIPBOARD_CAP_CAN_SEND | LI_CLIPBOARD_CAP_FILES));
+    assert(!LiIsValidClipboardCapabilities(
+        LI_CLIPBOARD_CAP_CAN_SEND | LI_CLIPBOARD_CAP_FILE_STREAMS));
+    assert(!LiIsValidClipboardCapabilities(
+        LI_CLIPBOARD_CAP_CAN_SEND | LI_CLIPBOARD_CAP_FILES |
+        LI_CLIPBOARD_CAP_FILE_STREAMS | LI_CLIPBOARD_CAP_BLOB));
+    assert(!LiIsValidClipboardCapabilities(
+        LI_CLIPBOARD_CAP_CAN_SEND | LI_CLIPBOARD_CAP_TEXT | 0x80));
+}
+
+static void testMessageValidation(void) {
+    const uint8_t operations[] = {
+        LI_CLIPBOARD_OP_HELLO,
+        LI_CLIPBOARD_OP_ANNOUNCE,
+        LI_CLIPBOARD_OP_REQUEST,
+        LI_CLIPBOARD_OP_DATA,
+        LI_CLIPBOARD_OP_ACK,
+        LI_CLIPBOARD_OP_NACK,
+        LI_CLIPBOARD_OP_RELEASE,
+    };
+
+    for (size_t i = 0; i < sizeof(operations); i++) {
+        LI_CLIPBOARD_HEADER header = validMessage(operations[i]);
+        assert(LiIsValidClipboardMessage(
+            &header, LI_CLIPBOARD_HEADER_SIZE + header.chunkLength));
+
+        header.sequence = 0;
+        assert(!LiIsValidClipboardMessage(
+            &header, LI_CLIPBOARD_HEADER_SIZE + header.chunkLength));
+    }
+
+    LI_CLIPBOARD_HEADER header = validMessage(LI_CLIPBOARD_OP_DATA);
+    assert(!LiIsValidClipboardMessage(
+        &header, LI_CLIPBOARD_HEADER_SIZE + header.chunkLength - 1));
+    header.flags = LI_CLIPBOARD_CAP_TEXT;
+    assert(!LiIsValidClipboardMessage(
+        &header, LI_CLIPBOARD_HEADER_SIZE + header.chunkLength));
+
+    header = validMessage(LI_CLIPBOARD_OP_RELEASE);
+    header.itemId = 0;
+    assert(!LiIsValidClipboardMessage(&header, LI_CLIPBOARD_HEADER_SIZE));
+}
+
 static void testBlobReferenceRoundTrip(void) {
     LI_CLIPBOARD_BLOB_REFERENCE input = {
         .targetMimeType = LI_CLIPBOARD_MIME_PNG,
@@ -51,7 +138,8 @@ static void testBlobReferenceRoundTrip(void) {
     }
 
     assert(LiEncodeClipboardBlobReference(encoded, sizeof(encoded), &input, &encodedLength));
-    assert(encodedLength == LI_CLIPBOARD_BLOB_REFERENCE_HEADER_SIZE + input.idLength);
+    assert(encodedLength ==
+           (size_t)LI_CLIPBOARD_BLOB_REFERENCE_HEADER_SIZE + input.idLength);
     assert(LiDecodeClipboardBlobReference(encoded, encodedLength, &output));
     assert(output.targetMimeType == input.targetMimeType);
     assert(output.size == input.size);
@@ -75,7 +163,7 @@ static void testFileOfferRoundTrip(void) {
                                       &input,
                                       &encodedLength));
     assert(encodedLength ==
-           LI_CLIPBOARD_FILE_OFFER_HEADER_SIZE + input.idLength);
+           (size_t)LI_CLIPBOARD_FILE_OFFER_HEADER_SIZE + input.idLength);
     assert(LiDecodeClipboardFileOffer(encoded, encodedLength, &output));
     assert(output.idLength == input.idLength);
     assert(strcmp(output.id, input.id) == 0);
@@ -219,6 +307,8 @@ static void testFileStreamingCapability(void) {
 
 int main(void) {
     testHeaderRoundTrip();
+    testCapabilityValidation();
+    testMessageValidation();
     testBlobReferenceRoundTrip();
     testFileOfferRoundTrip();
     testUtf8Validation();

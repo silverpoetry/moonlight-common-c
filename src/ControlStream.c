@@ -1024,7 +1024,7 @@ static uint8_t getClipboardLocalCapabilities(void) {
     if ((capabilities & LI_CLIPBOARD_CAP_FILES) == 0) {
         capabilities &= ~LI_CLIPBOARD_CAP_FILE_STREAMS;
     }
-    if ((capabilities & (LI_CLIPBOARD_CAP_PNG | LI_CLIPBOARD_CAP_FILES)) == 0) {
+    if ((capabilities & (LI_CLIPBOARD_CAP_TEXT | LI_CLIPBOARD_CAP_PNG)) == 0) {
         capabilities &= ~LI_CLIPBOARD_CAP_BLOB;
     }
 
@@ -1070,7 +1070,9 @@ static bool sendClipboardMessage(uint8_t op,
 
     if (!IS_SUNSHINE() || !StreamConfig.enableClipboardSync || !encryptedControlStream ||
             dataLength > LI_CLIPBOARD_MAX_CHUNK_BYTES ||
-            (dataLength != 0 && data == NULL)) {
+            (dataLength != 0 && data == NULL) ||
+            !LiIsValidClipboardMessage(
+                &header, LI_CLIPBOARD_HEADER_SIZE + dataLength)) {
         return false;
     }
 
@@ -1316,6 +1318,10 @@ int LiReleaseClipboardContent(void) {
     clipboardLocalData = NULL;
     PltUnlockMutex(&clipboardMutex);
 
+    if (itemId == 0) {
+        return 0;
+    }
+
     return sendClipboardControl(LI_CLIPBOARD_OP_RELEASE,
                                 LI_CLIPBOARD_MIME_NONE,
                                 0,
@@ -1338,32 +1344,15 @@ static void handleClipboardMessage(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int pack
 
     if (!StreamConfig.enableClipboardSync ||
             packetLength <= (int)sizeof(*ctlHdr) ||
-            !LiDecodeClipboardHeader(payload, payloadLength, &header)) {
+            !LiDecodeClipboardHeader(payload, payloadLength, &header) ||
+            !LiIsValidClipboardMessage(&header, payloadLength)) {
         return;
     }
     chunkData = payload + LI_CLIPBOARD_HEADER_SIZE;
     sizeLimit = LiGetClipboardMimeSizeLimit(header.mimeType);
 
-    if (header.version != LI_CLIPBOARD_VERSION ||
-            header.chunkLength > LI_CLIPBOARD_MAX_CHUNK_BYTES ||
-            header.chunkOffset > header.totalLength ||
-            header.chunkLength > header.totalLength - header.chunkOffset ||
-            payloadLength != LI_CLIPBOARD_HEADER_SIZE + header.chunkLength) {
-        sendClipboardNack(&header);
-        return;
-    }
-
     switch (header.op) {
     case LI_CLIPBOARD_OP_HELLO:
-        if (header.mimeType != LI_CLIPBOARD_MIME_NONE ||
-                header.totalLength != 0 ||
-                header.chunkOffset != 0 ||
-                header.chunkLength != 0 ||
-                header.originId == 0) {
-            sendClipboardNack(&header);
-            return;
-        }
-
         clipboardHostCapabilities = header.flags;
         clipboardHostCanSend = (header.flags & LI_CLIPBOARD_CAP_CAN_SEND) != 0;
         clipboardHostCanReceive = (header.flags & LI_CLIPBOARD_CAP_CAN_RECEIVE) != 0;

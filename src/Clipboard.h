@@ -47,6 +47,11 @@ extern "C" {
 #define LI_CLIPBOARD_CAP_BLOB 0x10
 #define LI_CLIPBOARD_CAP_FILES 0x20
 #define LI_CLIPBOARD_CAP_FILE_STREAMS 0x40
+#define LI_CLIPBOARD_KNOWN_CAPABILITIES \
+    (LI_CLIPBOARD_CAP_CAN_SEND | LI_CLIPBOARD_CAP_CAN_RECEIVE | \
+     LI_CLIPBOARD_CAP_TEXT | LI_CLIPBOARD_CAP_PNG | \
+     LI_CLIPBOARD_CAP_BLOB | LI_CLIPBOARD_CAP_FILES | \
+     LI_CLIPBOARD_CAP_FILE_STREAMS)
 
 #define LI_CLIPBOARD_BLOB_REFERENCE_VERSION 1
 #define LI_CLIPBOARD_BLOB_REFERENCE_HEADER_SIZE 40
@@ -110,6 +115,17 @@ bool LiEncodeClipboardHeader(uint8_t* destination,
 bool LiDecodeClipboardHeader(const uint8_t* source,
                              size_t sourceLength,
                              PLI_CLIPBOARD_HEADER header);
+
+// Validates the direction and format capability contract exchanged by HELLO.
+// File streaming is an atomic capability pair and blob transport is only
+// meaningful when at least one blob-backed MIME type is also supported.
+bool LiIsValidClipboardCapabilities(uint8_t capabilities);
+
+// Validates the operation-specific wire invariants of a decoded clipboard
+// message, including the complete payload length. Connection state and peer
+// capability checks remain the caller's responsibility.
+bool LiIsValidClipboardMessage(const LI_CLIPBOARD_HEADER* header,
+                               size_t payloadLength);
 
 bool LiEncodeClipboardBlobReference(uint8_t* destination,
                                     size_t destinationLength,

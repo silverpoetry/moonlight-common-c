@@ -73,6 +73,78 @@ bool LiDecodeClipboardHeader(const uint8_t* source,
     return true;
 }
 
+bool LiIsValidClipboardCapabilities(uint8_t capabilities) {
+    if ((capabilities & ~LI_CLIPBOARD_KNOWN_CAPABILITIES) != 0 ||
+            (capabilities &
+             (LI_CLIPBOARD_CAP_CAN_SEND | LI_CLIPBOARD_CAP_CAN_RECEIVE)) == 0 ||
+            (capabilities &
+             (LI_CLIPBOARD_CAP_TEXT | LI_CLIPBOARD_CAP_PNG |
+              LI_CLIPBOARD_CAP_FILES)) == 0 ||
+            ((capabilities & LI_CLIPBOARD_CAP_FILES) != 0) !=
+             ((capabilities & LI_CLIPBOARD_CAP_FILE_STREAMS) != 0) ||
+            ((capabilities & LI_CLIPBOARD_CAP_BLOB) != 0 &&
+             (capabilities &
+              (LI_CLIPBOARD_CAP_TEXT | LI_CLIPBOARD_CAP_PNG)) == 0)) {
+        return false;
+    }
+
+    return true;
+}
+
+bool LiIsValidClipboardMessage(const LI_CLIPBOARD_HEADER* header,
+                               size_t payloadLength) {
+    uint32_t sizeLimit;
+
+    if (header == NULL || header->version != LI_CLIPBOARD_VERSION ||
+            header->sequence == 0 ||
+            header->chunkLength > LI_CLIPBOARD_MAX_CHUNK_BYTES ||
+            header->chunkOffset > header->totalLength ||
+            header->chunkLength > header->totalLength - header->chunkOffset ||
+            payloadLength != LI_CLIPBOARD_HEADER_SIZE + header->chunkLength) {
+        return false;
+    }
+
+    switch (header->op) {
+    case LI_CLIPBOARD_OP_HELLO:
+        return header->mimeType == LI_CLIPBOARD_MIME_NONE &&
+               LiIsValidClipboardCapabilities(header->flags) &&
+               header->originId != 0 && header->itemId == 0 &&
+               header->totalLength == 0 && header->chunkOffset == 0 &&
+               header->chunkLength == 0;
+
+    case LI_CLIPBOARD_OP_ANNOUNCE:
+    case LI_CLIPBOARD_OP_REQUEST:
+        sizeLimit = LiGetClipboardMimeSizeLimit(header->mimeType);
+        return header->flags == 0 && header->originId != 0 &&
+               header->itemId != 0 && sizeLimit != 0 &&
+               header->totalLength <= sizeLimit &&
+               header->chunkOffset == 0 && header->chunkLength == 0;
+
+    case LI_CLIPBOARD_OP_DATA:
+        sizeLimit = LiGetClipboardMimeSizeLimit(header->mimeType);
+        return header->flags == 0 && header->originId != 0 &&
+               header->itemId != 0 && sizeLimit != 0 &&
+               header->totalLength <= sizeLimit;
+
+    case LI_CLIPBOARD_OP_ACK:
+    case LI_CLIPBOARD_OP_NACK:
+        return header->flags == 0 && header->originId != 0 &&
+               header->itemId != 0 &&
+               LiGetClipboardMimeSizeLimit(header->mimeType) != 0 &&
+               header->totalLength == 0 && header->chunkOffset == 0 &&
+               header->chunkLength == 0;
+
+    case LI_CLIPBOARD_OP_RELEASE:
+        return header->mimeType == LI_CLIPBOARD_MIME_NONE &&
+               header->flags == 0 && header->originId != 0 &&
+               header->itemId != 0 && header->totalLength == 0 &&
+               header->chunkOffset == 0 && header->chunkLength == 0;
+
+    default:
+        return false;
+    }
+}
+
 bool LiEncodeClipboardBlobReference(uint8_t* destination,
                                     size_t destinationLength,
                                     const LI_CLIPBOARD_BLOB_REFERENCE* reference,
@@ -118,7 +190,7 @@ bool LiDecodeClipboardBlobReference(const uint8_t* source,
 
     idLength = source[2];
     if (idLength == 0 || idLength > LI_CLIPBOARD_BLOB_ID_MAX_BYTES ||
-            sourceLength != LI_CLIPBOARD_BLOB_REFERENCE_HEADER_SIZE + idLength) {
+            sourceLength != (size_t)LI_CLIPBOARD_BLOB_REFERENCE_HEADER_SIZE + idLength) {
         return false;
     }
 
@@ -180,7 +252,7 @@ bool LiDecodeClipboardFileOffer(const uint8_t* source,
     idLength = source[5];
     if (idLength == 0 ||
             idLength > LI_CLIPBOARD_FILE_OFFER_ID_MAX_BYTES ||
-            sourceLength != LI_CLIPBOARD_FILE_OFFER_HEADER_SIZE + idLength) {
+            sourceLength != (size_t)LI_CLIPBOARD_FILE_OFFER_HEADER_SIZE + idLength) {
         return false;
     }
 

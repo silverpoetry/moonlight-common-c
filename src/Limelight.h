@@ -103,9 +103,9 @@ typedef struct _STREAM_CONFIGURATION {
     char remoteInputAesKey[16];
     char remoteInputAesIv[16];
 
-    // Requests Sunshine's native cursor extension. When enabled, the host may
-    // stop compositing the cursor into the video stream and send cursor shape
-    // updates over the control stream instead.
+    // Requests Sunshine's native cursor extension using one of the
+    // LI_NATIVE_CURSOR_VERSION_* values. The host may stop compositing the
+    // cursor into video and send cursor updates over the control stream.
     int enableNativeCursor;
 
     // Requests Sunshine's clipboard sync extension. Formats and directions are
@@ -506,7 +506,12 @@ typedef void(*ConnListenerSetControllerLED)(uint16_t controllerNumber, uint8_t r
 
 #define LI_NATIVE_CURSOR_FLAG_VISIBLE 0x01
 #define LI_NATIVE_CURSOR_FLAG_SHAPE   0x02
-#define LI_NATIVE_CURSOR_FORMAT_BGRA  0x01
+#define LI_NATIVE_CURSOR_VERSION_BGRA        0x01
+#define LI_NATIVE_CURSOR_VERSION_MONOCHROME  0x02
+#define LI_NATIVE_CURSOR_FORMAT_BGRA         0x01
+// Two tightly packed, MSB-first 1-bpp planes: SDL-style data followed by mask.
+// The row pitch for each plane is (width + 7) / 8 bytes.
+#define LI_NATIVE_CURSOR_FORMAT_MONOCHROME   0x02
 
 typedef struct _SS_NATIVE_CURSOR_UPDATE {
     uint8_t flags;

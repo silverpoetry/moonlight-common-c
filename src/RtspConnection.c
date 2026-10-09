@@ -1,4 +1,6 @@
 #include "Limelight-internal.h"
+#include "RtspFraming.h"
+#include "RtspConnectionReuse.h"
 #include "Rtsp.h"
 
 #define RTSP_CONNECT_TIMEOUT_SEC 10
@@ -15,6 +17,7 @@ static char urlAddr[URLSAFESTRING_LEN];
 static bool useEnet;
 static char* controlStreamId;
 static bool encryptedRtspEnabled;
+static bool persistentRtspEnabled;
 
 static PPLT_CRYPTO_CONTEXT encryptionCtx;
 static PPLT_CRYPTO_CONTEXT decryptionCtx;
@@ -393,37 +396,55 @@ static bool transactRtspMessageTcp(PRTSP_MESSAGE request, PRTSP_MESSAGE response
     char* responseBuffer;
     int responseBufferSize;
     int connectRetries;
+#ifdef LC_DEBUG
+    uint64_t transactionStart = PltGetMillis();
+    uint64_t connectedAt;
+    uint64_t firstByteAt = 0;
+#endif
 
     *error = -1;
     ret = false;
     responseBuffer = NULL;
     connectRetries = 0;
 
-    // Retry up to 10 seconds if we receive ECONNREFUSED errors from the host PC.
-    // This can happen with GFE 3.22 when initially launching a session because it
-    // returns HTTP 200 OK for the /launch request before the RTSP handshake port
-    // is listening.
-    do {
-        sock = connectTcpSocket(&RemoteAddr, AddrLen, RtspPortNumber, RTSP_CONNECT_TIMEOUT_SEC);
-        if (sock == INVALID_SOCKET) {
-            *error = LastSocketError();
-            if (*error == ECONNREFUSED) {
-                // Try again after 500 ms on ECONNREFUSED
-                PltSleepMs(RTSP_RETRY_DELAY_MS);
+    // Reuse only a socket explicitly negotiated during encrypted OPTIONS.
+    // Never replay a sent request after a connection error: SETUP/ANNOUNCE/PLAY
+    // can have side effects and the response may have been lost.
+    if (sock == INVALID_SOCKET) {
+        // Retry up to 10 seconds if we receive ECONNREFUSED errors from the host PC.
+        // This can happen with GFE 3.22 when initially launching a session because it
+        // returns HTTP 200 OK for the /launch request before the RTSP handshake port
+        // is listening.
+        do {
+            sock = connectTcpSocket(&RemoteAddr, AddrLen, RtspPortNumber, RTSP_CONNECT_TIMEOUT_SEC);
+            if (sock == INVALID_SOCKET) {
+                *error = LastSocketError();
+                if (*error == ECONNREFUSED) {
+                    // Try again after 500 ms on ECONNREFUSED
+                    PltSleepMs(RTSP_RETRY_DELAY_MS);
+                }
+                else {
+                    // Fail if we get some other error
+                    break;
+                }
             }
             else {
-                // Fail if we get some other error
+                // We successfully connected
                 break;
             }
+        } while (connectRetries++ < (RTSP_CONNECT_TIMEOUT_SEC * 1000) / RTSP_RETRY_DELAY_MS && !ConnectionInterrupted);
+        if (sock == INVALID_SOCKET) {
+#ifdef LC_DEBUG
+            Limelog("RTSP timing %s: connection failed after %llu ms, retries=%d, error=%d\n",
+                    request->message.request.command,
+                    (unsigned long long)(PltGetMillis() - transactionStart), connectRetries, *error);
+#endif
+            return ret;
         }
-        else {
-            // We successfully connected
-            break;
-        }
-    } while (connectRetries++ < (RTSP_CONNECT_TIMEOUT_SEC * 1000) / RTSP_RETRY_DELAY_MS && !ConnectionInterrupted);
-    if (sock == INVALID_SOCKET) {
-        return ret;
     }
+#ifdef LC_DEBUG
+    connectedAt = PltGetMillis();
+#endif
 
     serializedMessage = sealRtspMessage(request, &messageLen);
     if (serializedMessage == NULL) {
@@ -442,7 +463,9 @@ static bool transactRtspMessageTcp(PRTSP_MESSAGE request, PRTSP_MESSAGE response
         goto Exit;
     }
 
-    // Read the response until the server closes the connection
+    // Encrypted responses carry their frame length. Do not wait for TCP EOF
+    // after receiving the complete frame; intermediaries may delay the FIN.
+    // Legacy plaintext responses retain their close-delimited behavior.
     offset = 0;
     responseBufferSize = 0;
     for (;;) {
@@ -490,6 +513,11 @@ static bool transactRtspMessageTcp(PRTSP_MESSAGE request, PRTSP_MESSAGE response
             break;
         }
         else {
+#ifdef LC_DEBUG
+            if (offset == 0) {
+                firstByteAt = PltGetMillis();
+            }
+#endif
             if ((size_t)offset + err > MAX_RTSP_RESPONSE_SIZE) {
                 *error = EMSGSIZE;
                 Limelog("RTSP response exceeded maximum allowed size\n");
@@ -497,13 +525,38 @@ static bool transactRtspMessageTcp(PRTSP_MESSAGE request, PRTSP_MESSAGE response
             }
       
             offset += err;
+            if (encryptedRtspEnabled) {
+                int frameStatus = rtspEncryptedFrameStatus(responseBuffer, offset, MAX_RTSP_RESPONSE_SIZE);
+                if (frameStatus < 0) {
+                    *error = EINVAL;
+                    Limelog("Invalid encrypted RTSP response framing\n");
+                    goto Exit;
+                }
+                if (frameStatus > 0) {
+                    break;
+                }
+            }
         }
     }
 
     // Decrypt (if necessary) and deserialize the RTSP response
     ret = unsealRtspMessage(responseBuffer, offset, response);
+    if (ret && rtspCanReuseConnection(encryptedRtspEnabled,
+            request->message.request.command, response->message.response.statusCode,
+            getOptionContent(response->options, RTSP_PERSISTENT_CONNECTION_HEADER))) {
+        persistentRtspEnabled = true;
+        Limelog("RTSP startup connection reuse negotiated\n");
+    }
 
 Exit:
+#ifdef LC_DEBUG
+    // Log durations only: RTSP URLs and session keys must not enter diagnostics.
+    Limelog("RTSP timing %s: connect=%llu ms, first-byte=%llu ms, total=%llu ms, retries=%d, success=%d\n",
+            request->message.request.command,
+            (unsigned long long)(connectedAt - transactionStart),
+            (unsigned long long)(firstByteAt ? firstByteAt - connectedAt : 0),
+            (unsigned long long)(PltGetMillis() - transactionStart), connectRetries, ret);
+#endif
     if (serializedMessage != NULL) {
         free(serializedMessage);
     }
@@ -512,8 +565,11 @@ Exit:
         free(responseBuffer);
     }
 
-    closeSocket(sock);
-    sock = INVALID_SOCKET;
+    if (!ret || !persistentRtspEnabled || response->message.response.statusCode != 200) {
+        closeSocket(sock);
+        sock = INVALID_SOCKET;
+        persistentRtspEnabled = false;
+    }
     return ret;
 }
 
@@ -540,7 +596,12 @@ static bool requestOptions(PRTSP_MESSAGE response, int* error) {
 
     ret = initializeRtspRequest(&request, "OPTIONS", rtspTargetUrl);
     if (ret) {
-        ret = transactRtspMessage(&request, response, false, error);
+        if (!encryptedRtspEnabled || addOption(&request, RTSP_PERSISTENT_CONNECTION_HEADER, "1")) {
+            ret = transactRtspMessage(&request, response, false, error);
+        }
+        else {
+            ret = false;
+        }
         freeMessage(&request);
     }
 
@@ -953,6 +1014,8 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
     controlStreamId = APP_VERSION_AT_LEAST(7, 1, 431) ? "streamid=control/13/0" : "streamid=control/1/0";
     AudioEncryptionEnabled = false;
     encryptedRtspEnabled = serverInfo->rtspSessionUrl && strstr(serverInfo->rtspSessionUrl, "rtspenc://");
+    persistentRtspEnabled = false;
+    LC_ASSERT(sock == INVALID_SOCKET);
     encryptionCtx = PltCreateCryptoContext();
     decryptionCtx = PltCreateCryptoContext();
 
@@ -1435,6 +1498,12 @@ Exit:
         free(sessionIdString);
         sessionIdString = NULL;
     }
+
+    if (sock != INVALID_SOCKET) {
+        closeSocket(sock);
+        sock = INVALID_SOCKET;
+    }
+    persistentRtspEnabled = false;
 
     PltDestroyCryptoContext(encryptionCtx);
     PltDestroyCryptoContext(decryptionCtx);

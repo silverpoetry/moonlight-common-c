@@ -314,7 +314,8 @@ static PSDP_OPTION getAttributesList(char*urlSafeAddr) {
         }
 
         if (StreamConfig.enableNativeCursor) {
-            err |= addAttributeString(&optionHead, "x-ss-general.nativeCursor", "1");
+            snprintf(payloadStr, sizeof(payloadStr), "%d", StreamConfig.enableNativeCursor);
+            err |= addAttributeString(&optionHead, "x-ss-general.nativeCursor", payloadStr);
         }
     }
 

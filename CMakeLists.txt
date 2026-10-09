@@ -120,6 +120,14 @@ target_compile_definitions(moonlight-common-c PRIVATE HAS_SOCKLEN_T)
 
 include(CTest)
 if (BUILD_TESTING)
+  add_executable(rtsp-connection-reuse-test tests/RtspConnectionReuseTest.c)
+  target_include_directories(rtsp-connection-reuse-test PRIVATE src)
+  add_test(NAME rtsp-connection-reuse-test COMMAND rtsp-connection-reuse-test)
+
+  add_executable(rtsp-framing-test tests/RtspFramingTest.c)
+  target_include_directories(rtsp-framing-test PRIVATE src)
+  add_test(NAME rtsp-framing-test COMMAND rtsp-framing-test)
+
   add_executable(srtp-test tests/SrtpTest.c)
   target_link_libraries(srtp-test PRIVATE moonlight-common-c)
   add_test(NAME srtp-test COMMAND srtp-test)
